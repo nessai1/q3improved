@@ -305,7 +305,7 @@ SV_GameSystemCalls
 The module is making a system call
 ====================
 */
-#define	VMA(x) ((void *)args[x])
+#define	VMA(x) VM_ArgPtr(args[x])
 #define	VMF(x)	(*(float *)&args[x])
 
 intptr_t SV_GameSystemCalls( intptr_t *args ) {

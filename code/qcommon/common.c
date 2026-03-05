@@ -2744,7 +2744,6 @@ void Com_Frame( void ) {
 		Com_EventLoop();
 		Cbuf_Execute ();
 
-
 		//
 		// client side
 		//

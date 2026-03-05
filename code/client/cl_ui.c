@@ -757,7 +757,7 @@ static int FloatAsInt( float f ) {
 	return temp;
 }
 
-#define	VMA(x) ((void *)args[x])
+#define	VMA(x) VM_ArgPtr(args[x])
 #define	VMF(x)	(*(float *)&args[x])
 
 /*

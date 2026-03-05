@@ -602,7 +602,7 @@ void VM_Clear(void) {
 	lastVM = NULL;
 }
 
-void *VM_ArgPtr( int intValue ) {
+void *VM_ArgPtr( intptr_t intValue ) {
 	if ( !intValue ) {
 		return NULL;
 	}
@@ -611,14 +611,14 @@ void *VM_ArgPtr( int intValue ) {
 	  return NULL;
 
 	if ( currentVM->entryPoint ) {
-		return (void *)(currentVM->dataBase + intValue);
+		return (void *)intValue;
 	}
 	else {
 		return (void *)(currentVM->dataBase + (intValue & currentVM->dataMask));
 	}
 }
 
-void *VM_ExplicitArgPtr( vm_t *vm, int intValue ) {
+void *VM_ExplicitArgPtr( vm_t *vm, intptr_t intValue ) {
 	if ( !intValue ) {
 		return NULL;
 	}
@@ -629,7 +629,7 @@ void *VM_ExplicitArgPtr( vm_t *vm, int intValue ) {
 
 	//
 	if ( vm->entryPoint ) {
-		return (void *)(vm->dataBase + intValue);
+		return (void *)intValue;
 	}
 	else {
 		return (void *)(vm->dataBase + (intValue & vm->dataMask));
@@ -683,23 +683,33 @@ int	QDECL VM_Call( vm_t *vm, int callnum, ... ) {
 	  Com_Printf( "VM_Call( %i )\n", callnum );
 	}
 
+	// on x86_64, variadic args live in registers, not on the stack
+	// after callnum -- so we must always extract them explicitly
+	va_start(ap, callnum);
+	for (i = 0; i < sizeof (args) / sizeof (args[i]); i++) {
+		args[i] = va_arg(ap, int);
+	}
+	va_end(ap);
+
 	// if we have a dll loaded, call it directly
 	if ( vm->entryPoint ) {
 		//rcg010207 -  see dissertation at top of VM_DllSyscall() in this file.
-		va_start(ap, callnum);
-		for (i = 0; i < sizeof (args) / sizeof (args[i]); i++) {
-			args[i] = va_arg(ap, int);
-		}
-		va_end(ap);
-
 		r = vm->entryPoint( callnum,  args[0],  args[1],  args[2], args[3],
                             args[4],  args[5],  args[6], args[7],
                             args[8],  args[9], args[10], args[11],
                             args[12], args[13], args[14], args[15]);
-	} else if ( vm->compiled ) {
-		r = VM_CallCompiled( vm, &callnum );
 	} else {
-		r = VM_CallInterpreted( vm, &callnum );
+		// build args array for QVM: callnum at [0], params at [1..10]
+		int callArgs[11];
+		callArgs[0] = callnum;
+		for (i = 0; i < 10; i++)
+			callArgs[i+1] = args[i];
+
+		if ( vm->compiled ) {
+			r = VM_CallCompiled( vm, callArgs );
+		} else {
+			r = VM_CallInterpreted( vm, callArgs );
+		}
 	}
 
 	if ( oldVM != NULL ) // bk001220 - assert(currentVM!=NULL) for oldVM==NULL

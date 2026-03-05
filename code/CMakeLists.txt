@@ -14,8 +14,7 @@ if(BUILD_CLIENT)
   if(NOT X11_Xxf86vm_FOUND)
     message(FATAL_ERROR "X11 Xxf86vm extension not found (libxxf86vm-dev)")
   endif()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(PULSE REQUIRED libpulse-simple)
+  find_package(SDL2 REQUIRED)
 endif()
 
 # ===========================================================================
@@ -181,12 +180,12 @@ if(BUILD_CLIENT)
     ${UNIX_CLIENT_SRC}
     ${GAME_SHARED_SRC}
   )
-  target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${PULSE_INCLUDE_DIRS})
+  target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
   target_link_libraries(quake3 PRIVATE
     q3_splines q3_botlib q3_jpeglib
     X11::X11 X11::Xext X11::Xxf86vm
-    ${PULSE_LIBRARIES}
-    ${CMAKE_DL_LIBS} m
+    ${SDL2_LIBRARIES}
+    ${CMAKE_DL_LIBS} m pthread
   )
   set_target_properties(quake3 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -207,12 +206,12 @@ if(BUILD_CLIENT AND BUILD_CLIENT_SMP)
     ${UNIX_CLIENT_SRC}
     ${GAME_SHARED_SRC}
   )
-  target_include_directories(quake3-smp PRIVATE ${ENGINE_INCLUDES} ${PULSE_INCLUDE_DIRS})
+  target_include_directories(quake3-smp PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
   target_compile_definitions(quake3-smp PRIVATE SMP)
   target_link_libraries(quake3-smp PRIVATE
     q3_splines q3_botlib q3_jpeglib
     X11::X11 X11::Xext X11::Xxf86vm
-    ${PULSE_LIBRARIES}
+    ${SDL2_LIBRARIES}
     ${CMAKE_DL_LIBS} m pthread
   )
   set_target_properties(quake3-smp PROPERTIES
