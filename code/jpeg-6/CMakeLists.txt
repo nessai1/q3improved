@@ -1,0 +1,37 @@
+add_library(q3_jpeglib STATIC
+  jcapimin.c
+  jchuff.c
+  jcinit.c
+  jccoefct.c
+  jccolor.c
+  jfdctflt.c
+  jcdctmgr.c
+  jcphuff.c
+  jcmainct.c
+  jcmarker.c
+  jcmaster.c
+  jcomapi.c
+  jcparam.c
+  jcprepct.c
+  jcsample.c
+  jdapimin.c
+  jdapistd.c
+  jdatasrc.c
+  jdcoefct.c
+  jdcolor.c
+  jddctmgr.c
+  jdhuff.c
+  jdinput.c
+  jdmainct.c
+  jdmarker.c
+  jdmaster.c
+  jdpostct.c
+  jdsample.c
+  jdtrans.c
+  jerror.c
+  jidctflt.c
+  jmemmgr.c
+  jmemnobs.c
+  jutils.c
+)
+target_include_directories(q3_jpeglib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
