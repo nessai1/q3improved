@@ -281,6 +281,12 @@ void IN_ActivateMouse( void )
       glfwSetInputMode( glfw_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED );
       if ( glfwRawMouseMotionSupported() )
         glfwSetInputMode( glfw_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE );
+
+      // Verify the grab actually worked
+      int mode = glfwGetInputMode( glfw_window, GLFW_CURSOR );
+      if ( mode != GLFW_CURSOR_DISABLED )
+        ri.Printf( PRINT_WARNING, "IN_ActivateMouse: cursor grab failed (mode=%d, expected %d)\n",
+                   mode, GLFW_CURSOR_DISABLED );
     }
     mouse_first = qtrue;
     mouse_active = qtrue;

@@ -169,6 +169,7 @@ void VK_DrawStage( int numVertexes, int numIndexes,
   key.cullType = (uint8_t)cullType;
   key.polygonOffset = polygonOffset ? 1 : 0;
   key.texEnv = (uint8_t)texEnv;
+  key.mirror = vk.isMirror ? 1 : 0;
 
   VkPipeline pipeline = VK_GetPipeline( &key );
   if ( pipeline == VK_NULL_HANDLE )

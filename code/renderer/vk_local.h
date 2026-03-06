@@ -57,7 +57,7 @@ typedef struct {
   uint8_t   cullType;        // CT_FRONT_SIDED, CT_BACK_SIDED, CT_TWO_SIDED
   uint8_t   polygonOffset;   // 0 or 1
   uint8_t   texEnv;          // VK_TEXENV_*
-  uint8_t   depthRange;      // 0 = normal [0,1], 1 = weapon [0,0.3]
+  uint8_t   mirror;          // 1 = mirror view (flip front face)
 } vkPipelineKey_t;
 
 // ========================================================================
@@ -153,6 +153,7 @@ typedef struct {
   // --- Render state (tracked during command recording) ---
   qboolean                  renderPassActive;
   qboolean                  is2D;
+  qboolean                  isMirror;       // current view is a mirror (flip face winding)
   float                     modelMatrix[16];       // current entity model matrix
   float                     projectionMatrix[16];  // current projection matrix
   uint32_t                  currentStateBits;
@@ -251,7 +252,7 @@ static inline uint64_t VK_PipelineKeyHash( const vkPipelineKey_t *key ) {
        | ((uint64_t)key->cullType << 32)
        | ((uint64_t)key->polygonOffset << 34)
        | ((uint64_t)key->texEnv << 35)
-       | ((uint64_t)key->depthRange << 38);
+       | ((uint64_t)key->mirror << 38);
 }
 
 static inline VkCommandBuffer VK_CurrentCommandBuffer( void ) {

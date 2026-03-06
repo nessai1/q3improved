@@ -481,9 +481,13 @@ void RB_BeginDrawingView (void) {
 	// 2D images again
 	backEnd.projection2D = qfalse;
 
-	// Vulkan: store projection and initial model matrix
+	// Vulkan: ensure render pass is active for 3D drawing
+	VK_BeginRenderPass();
+
+	// Vulkan: store projection and initial model matrix, detect mirror
 	Com_Memcpy( vk.projectionMatrix, backEnd.viewParms.projectionMatrix, 64 );
 	Com_Memcpy( vk.modelMatrix, backEnd.viewParms.world.modelMatrix, 64 );
+	vk.isMirror = backEnd.viewParms.isMirror;
 
 	//
 	// set the modelview matrix for the viewer
@@ -790,6 +794,9 @@ void	RB_SetGL2D (void) {
 	backEnd.refdef.time = ri.Milliseconds();
 	backEnd.refdef.floatTime = backEnd.refdef.time * 0.001f;
 
+	// Vulkan: ensure render pass is active for 2D drawing
+	VK_BeginRenderPass();
+
 	// Vulkan: 2D orthographic projection and identity model matrix
 	{
 		float w = (float)glConfig.vidWidth;
@@ -898,6 +905,60 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 	qglTexCoord2f ( 0.5f / cols, ( rows - 0.5f ) / rows );
 	qglVertex2f (x, y+h);
 	qglEnd ();
+
+	// Vulkan: upload cinematic frame and draw textured quad
+	{
+		image_t *img = tr.scratchImage[client];
+
+		// Recreate VkImage if dimensions changed
+		if ( cols != img->uploadWidth || rows != img->uploadHeight || !img->vkImage ) {
+			if ( img->vkImageView ) vkDestroyImageView( vk.device, img->vkImageView, NULL );
+			if ( img->vkImage )     vkDestroyImage( vk.device, img->vkImage, NULL );
+			if ( img->vkMemory )    vkFreeMemory( vk.device, img->vkMemory, NULL );
+
+			VK_CreateImage( cols, rows, VK_FORMAT_R8G8B8A8_UNORM, 1,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				&img->vkImage, &img->vkMemory );
+			img->vkImageView = VK_CreateImageView( img->vkImage,
+				VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1 );
+			img->vkMipLevels = 1;
+			img->uploadWidth = cols;
+			img->uploadHeight = rows;
+		}
+
+		// Upload pixel data (blocking, uses staging buffer)
+		VK_EndRenderPass();
+		VK_UploadImageData( img->vkImage, data, cols, rows, 1 );
+
+		// Draw textured quad
+		float s0 = 0.5f / cols, t0 = 0.5f / rows;
+		float s1 = (cols - 0.5f) / cols, t1 = (rows - 0.5f) / rows;
+
+		vec4_t pos[4];
+		float tc[4][2];
+		color4ub_t col[4];
+		glIndex_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+
+		pos[0][0] = (float)x;     pos[0][1] = (float)y;     pos[0][2] = 0; pos[0][3] = 0;
+		pos[1][0] = (float)(x+w); pos[1][1] = (float)y;     pos[1][2] = 0; pos[1][3] = 0;
+		pos[2][0] = (float)(x+w); pos[2][1] = (float)(y+h); pos[2][2] = 0; pos[2][3] = 0;
+		pos[3][0] = (float)x;     pos[3][1] = (float)(y+h); pos[3][2] = 0; pos[3][3] = 0;
+
+		tc[0][0] = s0; tc[0][1] = t0;
+		tc[1][0] = s1; tc[1][1] = t0;
+		tc[2][0] = s1; tc[2][1] = t1;
+		tc[3][0] = s0; tc[3][1] = t1;
+
+		byte il = (byte)(tr.identityLight * 255);
+		for (int v = 0; v < 4; v++) {
+			col[v][0] = il; col[v][1] = il; col[v][2] = il; col[v][3] = 255;
+		}
+
+		VK_DrawStage( 4, 6, pos, tc, NULL, col, idx,
+			img, NULL,
+			GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA,
+			CT_TWO_SIDED, qfalse, VK_TEXENV_SINGLE );
+	}
 }
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
@@ -912,13 +973,35 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );	
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );
 	} else {
 		if (dirty) {
 			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
 			// it and don't try and do a texture compression
 			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data );
 		}
+	}
+
+	// Vulkan: upload cinematic texture data
+	{
+		image_t *img = tr.scratchImage[client];
+
+		if ( cols != (int)img->uploadWidth || rows != (int)img->uploadHeight || !img->vkImage ) {
+			if ( img->vkImageView ) vkDestroyImageView( vk.device, img->vkImageView, NULL );
+			if ( img->vkImage )     vkDestroyImage( vk.device, img->vkImage, NULL );
+			if ( img->vkMemory )    vkFreeMemory( vk.device, img->vkMemory, NULL );
+
+			VK_CreateImage( cols, rows, VK_FORMAT_R8G8B8A8_UNORM, 1,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				&img->vkImage, &img->vkMemory );
+			img->vkImageView = VK_CreateImageView( img->vkImage,
+				VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1 );
+			img->vkMipLevels = 1;
+			img->uploadWidth = cols;
+			img->uploadHeight = rows;
+		}
+
+		VK_UploadImageData( img->vkImage, data, cols, rows, 1 );
 	}
 }
 
@@ -1198,9 +1281,8 @@ void RB_ExecuteRenderCommands( const void *data ) {
 		backEnd.smpFrame = 1;
 	}
 
-	// Vulkan: acquire swapchain image and begin command buffer
-	VK_BeginFrame();
-	VK_BeginRenderPass();
+	// Vulkan: frame and render pass start lazily via VK_BeginRenderPass()
+	// (called from draw commands that need it, avoids presenting incomplete frames)
 
 	while ( 1 ) {
 		switch ( *(const int *)data ) {

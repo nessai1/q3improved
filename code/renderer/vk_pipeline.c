@@ -129,7 +129,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key )
   rasterizer.polygonMode = ( key->stateBits & GLS_POLYMODE_LINE ) ?
     VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
   rasterizer.lineWidth = 1.0f;
-  rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+  rasterizer.frontFace = key->mirror ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
   rasterizer.depthBiasEnable = key->polygonOffset ? VK_TRUE : VK_FALSE;
   rasterizer.depthBiasConstantFactor = key->polygonOffset ? -1.0f : 0.0f;
   rasterizer.depthBiasSlopeFactor = key->polygonOffset ? -1.0f : 0.0f;

@@ -375,20 +375,31 @@ void VK_CreateSwapchain( void )
   }
   free( formats );
 
-  // Choose present mode (FIFO = vsync, guaranteed available)
+  // Choose present mode based on r_swapInterval:
+  //   0 = no vsync: prefer IMMEDIATE, fallback MAILBOX, fallback FIFO
+  //   1 = vsync: FIFO (guaranteed available)
   VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
   uint32_t presentModeCount;
   vkGetPhysicalDeviceSurfacePresentModesKHR( vk.physicalDevice, vk.surface, &presentModeCount, NULL );
   VkPresentModeKHR *presentModes = (VkPresentModeKHR *)malloc( presentModeCount * sizeof(VkPresentModeKHR) );
   vkGetPhysicalDeviceSurfacePresentModesKHR( vk.physicalDevice, vk.surface, &presentModeCount, presentModes );
-  // prefer mailbox (triple buffering) if vsync is off
-  for ( uint32_t i = 0; i < presentModeCount; i++ ) {
-    if ( presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR ) {
-      presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-      break;
+  {
+    int swapInterval = r_swapInterval ? r_swapInterval->integer : 0;
+    if ( swapInterval == 0 ) {
+      qboolean hasImmediate = qfalse, hasMailbox = qfalse;
+      for ( uint32_t i = 0; i < presentModeCount; i++ ) {
+        if ( presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ) hasImmediate = qtrue;
+        if ( presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR )  hasMailbox = qtrue;
+      }
+      if ( hasImmediate )      presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+      else if ( hasMailbox )   presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
     }
   }
   free( presentModes );
+  ri.Printf( PRINT_ALL, "Vulkan present mode: %s\n",
+    presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" :
+    presentMode == VK_PRESENT_MODE_MAILBOX_KHR   ? "MAILBOX" :
+    presentMode == VK_PRESENT_MODE_FIFO_KHR      ? "FIFO" : "other" );
 
   // Extent
   if ( surfCaps.currentExtent.width != UINT32_MAX ) {
@@ -961,7 +972,7 @@ void VK_BeginRenderPass( void )
     return;
 
   if ( !vk.frameStarted )
-    return;
+    VK_BeginFrame();
 
   VkCommandBuffer cmd = VK_CurrentCommandBuffer();
 
