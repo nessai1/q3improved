@@ -94,8 +94,14 @@ void VK_EndSingleTimeCommands( VkCommandBuffer cmd )
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &cmd;
 
-  vkQueueSubmit( vk.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE );
-  vkQueueWaitIdle( vk.graphicsQueue );
+  VkResult r = vkQueueSubmit( vk.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE );
+  if ( r != VK_SUCCESS )
+    ri.Printf( PRINT_WARNING, "VK_EndSingleTimeCommands: vkQueueSubmit failed (%d)\n", r );
+
+  r = vkQueueWaitIdle( vk.graphicsQueue );
+  if ( r != VK_SUCCESS )
+    ri.Printf( PRINT_WARNING, "VK_EndSingleTimeCommands: vkQueueWaitIdle failed (%d)\n", r );
+
   vkFreeCommandBuffers( vk.device, vk.commandPool, 1, &cmd );
 }
 
@@ -1012,7 +1018,9 @@ void VK_EndFrame( void )
 
   VK_EndRenderPass();
 
-  vkEndCommandBuffer( cmd );
+  VkResult endResult = vkEndCommandBuffer( cmd );
+  if ( endResult != VK_SUCCESS )
+    ri.Error( ERR_FATAL, "VK_EndFrame: vkEndCommandBuffer failed (VkResult=%d)", endResult );
 
   VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
@@ -1026,8 +1034,10 @@ void VK_EndFrame( void )
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = &vk.renderFinished[f];
 
-  if ( vkQueueSubmit( vk.graphicsQueue, 1, &submitInfo, vk.inFlightFences[f] ) != VK_SUCCESS )
-    ri.Error( ERR_FATAL, "VK_EndFrame: vkQueueSubmit failed" );
+  VkResult submitResult = vkQueueSubmit( vk.graphicsQueue, 1, &submitInfo, vk.inFlightFences[f] );
+  if ( submitResult != VK_SUCCESS )
+    ri.Error( ERR_FATAL, "VK_EndFrame: vkQueueSubmit failed (VkResult=%d, frame=%u, image=%u)",
+              submitResult, f, vk.currentImageIndex );
 
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

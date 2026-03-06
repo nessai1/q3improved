@@ -843,20 +843,11 @@ Used for cinematics.
 */
 void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
 	int			i, j;
-	int			start, end;
 
 	if ( !tr.registered ) {
 		return;
 	}
 	R_SyncRenderThread();
-
-	// we definately want to sync every frame for the cinematics
-	qglFinish();
-
-	start = end = 0;
-	if ( r_speeds->integer ) {
-		start = ri.Milliseconds();
-	}
 
 	// make sure rows and cols are powers of 2
 	for ( i = 0 ; ( 1 << i ) < cols ; i++ ) {
@@ -867,50 +858,11 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 		ri.Error (ERR_DROP, "Draw_StretchRaw: size not a power of 2: %i by %i", cols, rows);
 	}
 
-	GL_Bind( tr.scratchImage[client] );
-
-	// if the scratchImage isn't in the format we want, specify it as a new texture
-	if ( cols != tr.scratchImage[client]->width || rows != tr.scratchImage[client]->height ) {
-		tr.scratchImage[client]->width = tr.scratchImage[client]->uploadWidth = cols;
-		tr.scratchImage[client]->height = tr.scratchImage[client]->uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );	
-	} else {
-		if (dirty) {
-			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
-			// it and don't try and do a texture compression
-			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		}
-	}
-
-	if ( r_speeds->integer ) {
-		end = ri.Milliseconds();
-		ri.Printf( PRINT_ALL, "qglTexSubImage2D %i, %i: %i msec\n", cols, rows, end - start );
-	}
-
-	RB_SetGL2D();
-
-	qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
-
-	qglBegin (GL_QUADS);
-	qglTexCoord2f ( 0.5f / cols,  0.5f / rows );
-	qglVertex2f (x, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols ,  0.5f / rows );
-	qglVertex2f (x+w, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x+w, y+h);
-	qglTexCoord2f ( 0.5f / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x, y+h);
-	qglEnd ();
-
 	// Vulkan: upload cinematic frame and draw textured quad
 	{
 		image_t *img = tr.scratchImage[client];
 
-		// Recreate VkImage if dimensions changed
+		// Recreate VkImage if dimensions changed (check BEFORE updating dimension fields)
 		if ( cols != img->uploadWidth || rows != img->uploadHeight || !img->vkImage ) {
 			if ( img->vkImageView ) vkDestroyImageView( vk.device, img->vkImageView, NULL );
 			if ( img->vkImage )     vkDestroyImage( vk.device, img->vkImage, NULL );
@@ -922,13 +874,15 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 			img->vkImageView = VK_CreateImageView( img->vkImage,
 				VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1 );
 			img->vkMipLevels = 1;
-			img->uploadWidth = cols;
-			img->uploadHeight = rows;
+			img->width = img->uploadWidth = cols;
+			img->height = img->uploadHeight = rows;
 		}
 
-		// Upload pixel data (blocking, uses staging buffer)
-		VK_EndRenderPass();
+		// Upload pixel data (blocking, uses separate single-time command buffers)
 		VK_UploadImageData( img->vkImage, data, cols, rows, 1 );
+
+		// Set up 2D rendering state and start frame/render pass
+		RB_SetGL2D();
 
 		// Draw textured quad
 		float s0 = 0.5f / cols, t0 = 0.5f / rows;
@@ -963,25 +917,6 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
 
-	GL_Bind( tr.scratchImage[client] );
-
-	// if the scratchImage isn't in the format we want, specify it as a new texture
-	if ( cols != tr.scratchImage[client]->width || rows != tr.scratchImage[client]->height ) {
-		tr.scratchImage[client]->width = tr.scratchImage[client]->uploadWidth = cols;
-		tr.scratchImage[client]->height = tr.scratchImage[client]->uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );
-	} else {
-		if (dirty) {
-			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
-			// it and don't try and do a texture compression
-			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		}
-	}
-
 	// Vulkan: upload cinematic texture data
 	{
 		image_t *img = tr.scratchImage[client];
@@ -997,8 +932,8 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 			img->vkImageView = VK_CreateImageView( img->vkImage,
 				VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1 );
 			img->vkMipLevels = 1;
-			img->uploadWidth = cols;
-			img->uploadHeight = rows;
+			img->width = img->uploadWidth = cols;
+			img->height = img->uploadHeight = rows;
 		}
 
 		VK_UploadImageData( img->vkImage, data, cols, rows, 1 );
