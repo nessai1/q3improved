@@ -29,6 +29,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../qcommon/qcommon.h"
 #include "tr_public.h"
 #include "qgl.h"
+#include <vulkan/vulkan.h>
 
 #define GL_INDEX_TYPE		GL_UNSIGNED_INT
 typedef unsigned int glIndex_t;
@@ -104,6 +105,12 @@ typedef struct image_s {
 	qboolean	mipmap;
 	qboolean	allowPicmip;
 	int			wrapClampMode;		// GL_CLAMP or GL_REPEAT
+
+	// Vulkan resources
+	VkImage			vkImage;
+	VkDeviceMemory	vkMemory;
+	VkImageView		vkImageView;
+	uint32_t		vkMipLevels;
 
 	struct image_s*	next;
 } image_t;

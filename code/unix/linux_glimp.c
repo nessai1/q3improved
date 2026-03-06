@@ -20,10 +20,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 /*
-** LINUX_GLIMP.C -- GLFW backend
+** LINUX_GLIMP.C -- GLFW + Vulkan backend
 **
-** Window management, GL context, and input via GLFW.
-** Replaces the X11/GLX/XF86VidMode code.
+** Window management via GLFW, Vulkan rendering.
+** No OpenGL context -- window created with GLFW_NO_API.
 */
 
 #include <signal.h>
@@ -33,9 +33,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <string.h>
 #include <dlfcn.h>
 
+#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #include "../renderer/tr_local.h"
+#include "../renderer/vk_local.h"
 #include "../client/client.h"
 #include "linux_local.h"
 #include "unix_glw.h"
@@ -342,81 +344,6 @@ void GLimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned 
   glfwSetGammaRamp( glfw_monitor, &ramp );
 }
 
-// ========================================================================
-// GL Extensions
-// ========================================================================
-
-static void GLW_InitExtensions( void )
-{
-  ri.Printf( PRINT_ALL, "Initializing OpenGL extensions\n" );
-
-  // GL_S3_s3tc
-  if ( strstr( glConfig.extensions_string, "GL_S3_s3tc" ) ) {
-    if ( r_ext_compressed_textures->value )
-      glConfig.textureCompression = TC_S3TC;
-    else
-      glConfig.textureCompression = TC_NONE;
-  } else {
-    glConfig.textureCompression = TC_NONE;
-  }
-
-  // GL_EXT_texture_env_add
-  glConfig.textureEnvAddAvailable = qfalse;
-  if ( strstr( glConfig.extensions_string, "EXT_texture_env_add" ) ) {
-    if ( r_ext_texture_env_add->integer )
-      glConfig.textureEnvAddAvailable = qtrue;
-    else
-      glConfig.textureEnvAddAvailable = qfalse;
-    ri.Printf( PRINT_ALL, "...using GL_EXT_texture_env_add\n" );
-  } else {
-    ri.Printf( PRINT_ALL, "...GL_EXT_texture_env_add not found\n" );
-  }
-
-  // GL_ARB_multitexture
-  qglMultiTexCoord2fARB = NULL;
-  qglActiveTextureARB = NULL;
-  qglClientActiveTextureARB = NULL;
-  if ( strstr( glConfig.extensions_string, "GL_ARB_multitexture" ) ) {
-    if ( r_ext_multitexture->value ) {
-      qglMultiTexCoord2fARB = ( void ( APIENTRY *)( GLenum, GLfloat, GLfloat ) )
-        dlsym( glw_state.OpenGLLib, "glMultiTexCoord2fARB" );
-      qglActiveTextureARB = ( void ( APIENTRY *)( GLenum ) )
-        dlsym( glw_state.OpenGLLib, "glActiveTextureARB" );
-      qglClientActiveTextureARB = ( void ( APIENTRY *)( GLenum ) )
-        dlsym( glw_state.OpenGLLib, "glClientActiveTextureARB" );
-
-      if ( qglActiveTextureARB ) {
-        qglGetIntegerv( GL_MAX_ACTIVE_TEXTURES_ARB, &glConfig.maxActiveTextures );
-        if ( glConfig.maxActiveTextures > 1 )
-          ri.Printf( PRINT_ALL, "...using GL_ARB_multitexture\n" );
-        else
-          ri.Printf( PRINT_ALL, "...not using GL_ARB_multitexture, < 2 texture units\n" );
-      }
-    } else {
-      ri.Printf( PRINT_ALL, "...ignoring GL_ARB_multitexture\n" );
-    }
-  } else {
-    ri.Printf( PRINT_ALL, "...GL_ARB_multitexture not found\n" );
-  }
-
-  // GL_EXT_compiled_vertex_array
-  if ( strstr( glConfig.extensions_string, "GL_EXT_compiled_vertex_array" ) ) {
-    if ( r_ext_compiled_vertex_array->value ) {
-      ri.Printf( PRINT_ALL, "...using GL_EXT_compiled_vertex_array\n" );
-      qglLockArraysEXT = ( void ( APIENTRY *)( GLint, GLint ) )
-        dlsym( glw_state.OpenGLLib, "glLockArraysEXT" );
-      qglUnlockArraysEXT = ( void ( APIENTRY *)( void ) )
-        dlsym( glw_state.OpenGLLib, "glUnlockArraysEXT" );
-      if ( !qglLockArraysEXT || !qglUnlockArraysEXT ) {
-        ri.Printf( PRINT_ALL, "...GL_EXT_compiled_vertex_array not found\n" );
-      }
-    } else {
-      ri.Printf( PRINT_ALL, "...ignoring GL_EXT_compiled_vertex_array\n" );
-    }
-  } else {
-    ri.Printf( PRINT_ALL, "...GL_EXT_compiled_vertex_array not found\n" );
-  }
-}
 
 // ========================================================================
 // Window / GL context
@@ -424,9 +351,7 @@ static void GLW_InitExtensions( void )
 
 static int GLW_SetMode( int mode, qboolean fullscreen )
 {
-  int colorbits, depthbits, stencilbits;
-
-  ri.Printf( PRINT_ALL, "Initializing OpenGL display\n" );
+  ri.Printf( PRINT_ALL, "Initializing Vulkan display\n" );
   ri.Printf( PRINT_ALL, "...setting mode %d:", mode );
 
   if ( !R_GetModeInfo( &glConfig.vidWidth, &glConfig.vidHeight, &glConfig.windowAspect, mode ) ) {
@@ -435,21 +360,12 @@ static int GLW_SetMode( int mode, qboolean fullscreen )
   }
   ri.Printf( PRINT_ALL, " %d %d\n", glConfig.vidWidth, glConfig.vidHeight );
 
-  // color/depth/stencil bits
-  colorbits = ( r_colorbits->value == 0 ) ? 24 : r_colorbits->value;
-  depthbits = ( r_depthbits->value == 0 ) ? 24 : r_depthbits->value;
-  stencilbits = r_stencilbits->value;
+  glConfig.colorBits = 32;
+  glConfig.depthBits = 24;
+  glConfig.stencilBits = 8;
 
-  glfwWindowHint( GLFW_RED_BITS, colorbits / 3 );
-  glfwWindowHint( GLFW_GREEN_BITS, colorbits / 3 );
-  glfwWindowHint( GLFW_BLUE_BITS, colorbits / 3 );
-  glfwWindowHint( GLFW_DEPTH_BITS, depthbits );
-  glfwWindowHint( GLFW_STENCIL_BITS, stencilbits );
-  glfwWindowHint( GLFW_DOUBLEBUFFER, GLFW_TRUE );
-
-  glConfig.colorBits = colorbits;
-  glConfig.depthBits = depthbits;
-  glConfig.stencilBits = stencilbits;
+  // No OpenGL context -- Vulkan only
+  glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
 
   // create window
   GLFWmonitor *monitor = NULL;
@@ -468,8 +384,16 @@ static int GLW_SetMode( int mode, qboolean fullscreen )
     return fullscreen ? RSERR_INVALID_FULLSCREEN : RSERR_INVALID_MODE;
   }
 
-  glfwMakeContextCurrent( glfw_window );
   glConfig.isFullscreen = fullscreen;
+
+  // Create Vulkan surface
+  if ( glfwCreateWindowSurface( vk.instance, glfw_window, NULL, &vk.surface ) != VK_SUCCESS ) {
+    ri.Printf( PRINT_ALL, "...glfwCreateWindowSurface failed\n" );
+    return RSERR_INVALID_MODE;
+  }
+
+  // Now that we have the surface, init the rest of Vulkan
+  VK_InitDevice();
 
   // set up callbacks
   glfwSetKeyCallback( glfw_window, key_callback );
@@ -480,7 +404,7 @@ static int GLW_SetMode( int mode, qboolean fullscreen )
   glfwSetWindowFocusCallback( glfw_window, window_focus_callback );
   glfwSetWindowPosCallback( glfw_window, window_pos_callback );
 
-  ri.Printf( PRINT_ALL, "...GL window created\n" );
+  ri.Printf( PRINT_ALL, "...Vulkan window created\n" );
   return RSERR_OK;
 }
 
@@ -510,14 +434,6 @@ static qboolean GLW_StartDriverAndSetMode( int mode, qboolean fullscreen )
   return qtrue;
 }
 
-static qboolean GLW_LoadOpenGL( void )
-{
-  // QGL_Init loads all GL function pointers via dlsym
-  if ( QGL_Init( OPENGL_DRIVER_NAME ) ) {
-    return qtrue;
-  }
-  return qfalse;
-}
 
 // ========================================================================
 // Public GLimp interface
@@ -525,9 +441,6 @@ static qboolean GLW_LoadOpenGL( void )
 
 void GLimp_Init( void )
 {
-  char buf[1024];
-  cvar_t *lastValidRenderer = ri.Cvar_Get( "r_lastValidRenderer", "(uninitialized)", CVAR_ARCHIVE );
-
   r_allowSoftwareGL = ri.Cvar_Get( "r_allowSoftwareGL", "0", CVAR_LATCH );
 
   InitSig();
@@ -538,46 +451,43 @@ void GLimp_Init( void )
     ri.Error( ERR_FATAL, "GLimp_Init() - glfwInit() failed\n" );
   }
 
-  // load GL function pointers and create window
+  // Set all qgl* pointers to no-op stubs (prevents segfaults from GL code)
+  QGL_Init( "vulkan" );
+
+  // Init Vulkan instance (before window creation, so GLFW can query extensions)
+  VK_Init();
+
+  // Create window and Vulkan surface, then init device
   if ( !GLW_StartDriverAndSetMode( r_mode->integer, (qboolean)r_fullscreen->integer ) ) {
-    // try default mode
     if ( r_mode->integer != 3 ) {
       if ( !GLW_StartDriverAndSetMode( 3, qfalse ) ) {
-        ri.Error( ERR_FATAL, "GLimp_Init() - could not load OpenGL subsystem\n" );
+        ri.Error( ERR_FATAL, "GLimp_Init() - could not initialize Vulkan\n" );
       }
     } else {
-      ri.Error( ERR_FATAL, "GLimp_Init() - could not load OpenGL subsystem\n" );
+      ri.Error( ERR_FATAL, "GLimp_Init() - could not initialize Vulkan\n" );
     }
-  }
-
-  // load GL function pointers (dlsym from libGL)
-  if ( !GLW_LoadOpenGL() ) {
-    ri.Error( ERR_FATAL, "GLimp_Init() - could not load OpenGL subsystem\n" );
   }
 
   glConfig.driverType = GLDRV_ICD;
   glConfig.hardwareType = GLHW_GENERIC;
 
-  // get config strings
-  Q_strncpyz( glConfig.vendor_string, (const char *)qglGetString( GL_VENDOR ), sizeof( glConfig.vendor_string ) );
-  Q_strncpyz( glConfig.renderer_string, (const char *)qglGetString( GL_RENDERER ), sizeof( glConfig.renderer_string ) );
-  if ( *glConfig.renderer_string && glConfig.renderer_string[strlen(glConfig.renderer_string) - 1] == '\n' )
-    glConfig.renderer_string[strlen(glConfig.renderer_string) - 1] = 0;
-  Q_strncpyz( glConfig.version_string, (const char *)qglGetString( GL_VERSION ), sizeof( glConfig.version_string ) );
-  Q_strncpyz( glConfig.extensions_string, (const char *)qglGetString( GL_EXTENSIONS ), sizeof( glConfig.extensions_string ) );
+  // Fill in config strings from Vulkan device properties
+  Q_strncpyz( glConfig.vendor_string, "Vulkan", sizeof( glConfig.vendor_string ) );
+  Q_strncpyz( glConfig.renderer_string, vk.deviceProperties.deviceName,
+              sizeof( glConfig.renderer_string ) );
+  Com_sprintf( glConfig.version_string, sizeof( glConfig.version_string ),
+               "Vulkan %d.%d.%d",
+               VK_API_VERSION_MAJOR( vk.deviceProperties.apiVersion ),
+               VK_API_VERSION_MINOR( vk.deviceProperties.apiVersion ),
+               VK_API_VERSION_PATCH( vk.deviceProperties.apiVersion ) );
+  Q_strncpyz( glConfig.extensions_string, "VK_KHR_swapchain", sizeof( glConfig.extensions_string ) );
 
-  // chipset specific configuration
-  strcpy( buf, glConfig.renderer_string );
-  Q_strlwr( buf );
-
-  if ( Q_stricmp( lastValidRenderer->string, glConfig.renderer_string ) ) {
-    glConfig.hardwareType = GLHW_GENERIC;
-    ri.Cvar_Set( "r_textureMode", "GL_LINEAR_MIPMAP_NEAREST" );
-  }
+  // Vulkan handles multitexture natively
+  glConfig.maxActiveTextures = 2;
+  glConfig.textureEnvAddAvailable = qtrue;
 
   ri.Cvar_Set( "r_lastValidRenderer", glConfig.renderer_string );
 
-  GLW_InitExtensions();
   GLW_InitGamma();
 
   InitSig();
@@ -586,6 +496,8 @@ void GLimp_Init( void )
 void GLimp_Shutdown( void )
 {
   IN_DeactivateMouse();
+
+  VK_Shutdown();
 
   if ( gamma_saved && glfw_monitor ) {
     GLFWgammaramp ramp;
@@ -603,8 +515,6 @@ void GLimp_Shutdown( void )
 
   glfwTerminate();
 
-  QGL_Shutdown();
-
   memset( &glConfig, 0, sizeof( glConfig ) );
   memset( &glState, 0, sizeof( glState ) );
 }
@@ -618,10 +528,7 @@ void GLimp_LogComment( char *comment )
 
 void GLimp_EndFrame( void )
 {
-  if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 ) {
-    glfwSwapBuffers( glfw_window );
-  }
-  QGL_EnableLogging( (qboolean)r_logFile->integer );
+  VK_EndFrame();
 }
 
 // ========================================================================
@@ -641,7 +548,6 @@ static void *GLimp_RenderThreadWrapper( void *arg )
 {
   Com_Printf( "Render thread starting\n" );
   glimpRenderThread();
-  glfwMakeContextCurrent( NULL );
   Com_Printf( "Render thread terminating\n" );
   return arg;
 }
@@ -674,8 +580,6 @@ void *GLimp_RendererSleep( void )
 {
   void *data;
 
-  glfwMakeContextCurrent( NULL );
-
   pthread_mutex_lock( &smpMutex );
   {
     smpData = NULL;
@@ -687,8 +591,6 @@ void *GLimp_RendererSleep( void )
     data = (void *)smpData;
   }
   pthread_mutex_unlock( &smpMutex );
-
-  glfwMakeContextCurrent( glfw_window );
 
   return data;
 }
@@ -702,14 +604,10 @@ void GLimp_FrontEndSleep( void )
     }
   }
   pthread_mutex_unlock( &smpMutex );
-
-  glfwMakeContextCurrent( glfw_window );
 }
 
 void GLimp_WakeRenderer( void *data )
 {
-  glfwMakeContextCurrent( NULL );
-
   pthread_mutex_lock( &smpMutex );
   {
     assert( smpData == NULL );

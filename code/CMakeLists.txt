@@ -9,11 +9,12 @@ add_subdirectory(splines)
 
 # --- Find system dependencies ---
 if(BUILD_CLIENT)
-  # GLFW for window management, input, GL context
+  # GLFW for window management and Vulkan surface
   set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   add_subdirectory(/home/daniel/repos/github/glfw ${CMAKE_BINARY_DIR}/glfw)
+  find_package(Vulkan REQUIRED)
   find_package(SDL2 REQUIRED)
 endif()
 
@@ -115,6 +116,11 @@ set(RENDERER_SRC
   ${S}/renderer/tr_sky.c
   ${S}/renderer/tr_surface.c
   ${S}/renderer/tr_world.c
+  ${S}/renderer/vk_init.c
+  ${S}/renderer/vk_pipeline.c
+  ${S}/renderer/vk_image.c
+  ${S}/renderer/vk_shade.c
+  ${S}/renderer/qgl_stubs.c
 )
 
 # --- unix platform (client) ---
@@ -123,7 +129,6 @@ set(UNIX_CLIENT_SRC
   ${S}/unix/unix_net.c
   ${S}/unix/unix_shared.c
   ${S}/unix/linux_common.c
-  ${S}/unix/linux_qgl.c
   ${S}/unix/linux_glimp.c
   ${S}/unix/linux_joystick.c
   ${S}/unix/linux_snd.c
@@ -160,9 +165,6 @@ set(ALL_ENGINE_C_SRC
   ${GAME_SHARED_SRC}
 )
 set_source_files_properties(${ALL_ENGINE_C_SRC} PROPERTIES LANGUAGE CXX)
-# Keep linux_qgl.c as C -- 346 dlsym->fnptr assignments not worth casting
-# (will be replaced by Vulkan loader)
-set_source_files_properties(${S}/unix/linux_qgl.c PROPERTIES LANGUAGE C)
 
 # Common include directories for engine targets
 set(ENGINE_INCLUDES
@@ -181,6 +183,32 @@ set(ENGINE_INCLUDES
 # ===========================================================================
 # Client executable
 # ===========================================================================
+# ===========================================================================
+# SPIR-V shader compilation
+# ===========================================================================
+if(BUILD_CLIENT)
+  set(SHADER_DIR ${S}/renderer/shaders)
+  set(SPV_OUTPUT_DIR ${CMAKE_BINARY_DIR}/baseq3/shaders)
+  file(MAKE_DIRECTORY ${SPV_OUTPUT_DIR})
+
+  add_custom_command(
+    OUTPUT ${SPV_OUTPUT_DIR}/generic.vert.spv
+    COMMAND Vulkan::glslc -o ${SPV_OUTPUT_DIR}/generic.vert.spv ${SHADER_DIR}/generic.vert
+    DEPENDS ${SHADER_DIR}/generic.vert
+    COMMENT "Compiling generic.vert -> SPIR-V"
+  )
+  add_custom_command(
+    OUTPUT ${SPV_OUTPUT_DIR}/generic.frag.spv
+    COMMAND Vulkan::glslc -o ${SPV_OUTPUT_DIR}/generic.frag.spv ${SHADER_DIR}/generic.frag
+    DEPENDS ${SHADER_DIR}/generic.frag
+    COMMENT "Compiling generic.frag -> SPIR-V"
+  )
+  add_custom_target(shaders ALL DEPENDS
+    ${SPV_OUTPUT_DIR}/generic.vert.spv
+    ${SPV_OUTPUT_DIR}/generic.frag.spv
+  )
+endif()
+
 if(BUILD_CLIENT)
   add_executable(quake3
     ${RENDERER_SRC}
@@ -193,9 +221,11 @@ if(BUILD_CLIENT)
     ${GAME_SHARED_SRC}
   )
   target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
+  add_dependencies(quake3 shaders)
   target_link_libraries(quake3 PRIVATE
     q3_splines q3_botlib q3_jpeglib
     glfw
+    Vulkan::Vulkan
     ${SDL2_LIBRARIES}
     ${CMAKE_DL_LIBS} m pthread
   )
@@ -220,9 +250,11 @@ if(BUILD_CLIENT AND BUILD_CLIENT_SMP)
   )
   target_include_directories(quake3-smp PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
   target_compile_definitions(quake3-smp PRIVATE SMP)
+  add_dependencies(quake3-smp shaders)
   target_link_libraries(quake3-smp PRIVATE
     q3_splines q3_botlib q3_jpeglib
     glfw
+    Vulkan::Vulkan
     ${SDL2_LIBRARIES}
     ${CMAKE_DL_LIBS} m pthread
   )

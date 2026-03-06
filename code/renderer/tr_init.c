@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_init.c -- functions that are not called every frame
 
 #include "tr_local.h"
+#include "vk_local.h"
 
 glconfig_t	glConfig;
 glstate_t	glState;
@@ -212,15 +213,8 @@ static void InitOpenGL( void )
 		strcpy( renderer_buffer, glConfig.renderer_string );
 		Q_strlwr( renderer_buffer );
 
-		// OpenGL driver constants
-		qglGetIntegerv( GL_MAX_TEXTURE_SIZE, &temp );
-		glConfig.maxTextureSize = temp;
-
-		// stubbed or broken drivers may have reported 0...
-		if ( glConfig.maxTextureSize <= 0 ) 
-		{
-			glConfig.maxTextureSize = 0;
-		}
+		// Vulkan: get max texture size from device limits
+		glConfig.maxTextureSize = vk.deviceProperties.limits.maxImageDimension2D;
 	}
 
 	// init command buffers and SMP

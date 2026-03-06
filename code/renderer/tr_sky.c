@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_sky.c
 #include "tr_local.h"
+#include "vk_local.h"
 
 #define SKY_SUBDIVISIONS		8
 #define HALF_SKY_SUBDIVISIONS	(SKY_SUBDIVISIONS/2)
@@ -382,6 +383,64 @@ static void DrawSkySide( struct image_s *image, const int mins[2], const int max
 
 		qglEnd();
 	}
+
+	// Vulkan: batch the grid into an indexed triangle list
+	{
+		// Max grid: (SKY_SUBDIVISIONS+1)^2 = 81 verts, 8*8*2 = 128 tris
+		vec4_t      skyPos[81];
+		float       skyTC[81][2];
+		color4ub_t  skyCol[81];
+		glIndex_t   skyIdx[384];
+		int         numVerts = 0, numIdx = 0;
+
+		int tmin = mins[1] + HALF_SKY_SUBDIVISIONS;
+		int tmax = maxs[1] + HALF_SKY_SUBDIVISIONS;
+		int smin = mins[0] + HALF_SKY_SUBDIVISIONS;
+		int smax = maxs[0] + HALF_SKY_SUBDIVISIONS;
+		int cols = smax - smin + 1;
+
+		// Build vertex array from grid points
+		for ( t = tmin; t <= tmax; t++ ) {
+			for ( s = smin; s <= smax; s++ ) {
+				VectorCopy( s_skyPoints[t][s], skyPos[numVerts] );
+				skyPos[numVerts][3] = 0.0f;
+				skyTC[numVerts][0] = s_skyTexCoords[t][s][0];
+				skyTC[numVerts][1] = s_skyTexCoords[t][s][1];
+				skyCol[numVerts][0] = 255;
+				skyCol[numVerts][1] = 255;
+				skyCol[numVerts][2] = 255;
+				skyCol[numVerts][3] = 255;
+				numVerts++;
+			}
+		}
+
+		// Build index array: 2 triangles per quad cell
+		// Winding matches GL triangle strip: (t,s)-(t+1,s)-(t,s+1), (t,s+1)-(t+1,s)-(t+1,s+1)
+		for ( t = 0; t < tmax - tmin; t++ ) {
+			for ( s = 0; s < cols - 1; s++ ) {
+				int v00 = t * cols + s;
+				int v10 = (t + 1) * cols + s;
+				int v01 = t * cols + (s + 1);
+				int v11 = (t + 1) * cols + (s + 1);
+
+				skyIdx[numIdx++] = v00;
+				skyIdx[numIdx++] = v10;
+				skyIdx[numIdx++] = v01;
+
+				skyIdx[numIdx++] = v01;
+				skyIdx[numIdx++] = v10;
+				skyIdx[numIdx++] = v11;
+			}
+		}
+
+		if ( numVerts > 0 && numIdx > 0 ) {
+			VK_DrawStage( numVerts, numIdx,
+				skyPos, skyTC, NULL, skyCol, skyIdx,
+				image, NULL,
+				GLS_DEFAULT, CT_TWO_SIDED,
+				qfalse, VK_TEXENV_SINGLE );
+		}
+	}
 }
 
 static void DrawSkyBox( shader_t *shader )
@@ -723,6 +782,7 @@ void RB_DrawSun( void ) {
 
 	// farthest depth range
 	qglDepthRange( 1.0, 1.0 );
+	VK_SetDepthRange( 1.0f, 1.0f );
 
 	// FIXME: use quad stamp
 	RB_BeginSurface( tr.sunShader, tess.fogNum );
@@ -781,6 +841,7 @@ void RB_DrawSun( void ) {
 
 	// back to normal depth range
 	qglDepthRange( 0.0, 1.0 );
+	VK_SetDepthRange( 0.0f, 1.0f );
 }
 
 
@@ -810,19 +871,36 @@ void RB_StageIteratorSky( void ) {
 	// much sky is getting sucked in
 	if ( r_showsky->integer ) {
 		qglDepthRange( 0.0, 0.0 );
+		VK_SetDepthRange( 0.0f, 0.0f );
 	} else {
 		qglDepthRange( 1.0, 1.0 );
+		VK_SetDepthRange( 1.0f, 1.0f );
 	}
 
 	// draw the outer skybox
 	if ( tess.shader->sky.outerbox[0] && tess.shader->sky.outerbox[0] != tr.defaultImage ) {
 		qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
-		
+
 		qglPushMatrix ();
 		GL_State( 0 );
 		qglTranslatef (backEnd.viewParms.orient.origin[0], backEnd.viewParms.orient.origin[1], backEnd.viewParms.orient.origin[2]);
 
-		DrawSkyBox( tess.shader );
+		// Vulkan: apply translation to model matrix (sky centered on camera)
+		{
+			float savedModel[16];
+			float ox = backEnd.viewParms.orient.origin[0];
+			float oy = backEnd.viewParms.orient.origin[1];
+			float oz = backEnd.viewParms.orient.origin[2];
+			Com_Memcpy( savedModel, vk.modelMatrix, 64 );
+			// Post-multiply by translate(ox, oy, oz) -- column-major
+			vk.modelMatrix[12] += vk.modelMatrix[0]*ox + vk.modelMatrix[4]*oy + vk.modelMatrix[8]*oz;
+			vk.modelMatrix[13] += vk.modelMatrix[1]*ox + vk.modelMatrix[5]*oy + vk.modelMatrix[9]*oz;
+			vk.modelMatrix[14] += vk.modelMatrix[2]*ox + vk.modelMatrix[6]*oy + vk.modelMatrix[10]*oz;
+
+			DrawSkyBox( tess.shader );
+
+			Com_Memcpy( vk.modelMatrix, savedModel, 64 );
+		}
 
 		qglPopMatrix();
 	}
@@ -838,6 +916,7 @@ void RB_StageIteratorSky( void ) {
 
 	// back to normal depth range
 	qglDepthRange( 0.0, 1.0 );
+	VK_SetDepthRange( 0.0f, 1.0f );
 
 	// note that sky was drawn so we will draw a sun later
 	backEnd.skyRenderedThisView = qtrue;

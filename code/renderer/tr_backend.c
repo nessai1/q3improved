@@ -20,6 +20,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 #include "tr_local.h"
+#include "vk_local.h"
 
 backEndData_t	*backEndData[SMP_FRAMES];
 backEndState_t	backEnd;
@@ -415,10 +416,45 @@ static void SetViewportAndScissor( void ) {
 	qglMatrixMode(GL_MODELVIEW);
 
 	// set the window clipping
-	qglViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
+	qglViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
-	qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
+	qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
+
+	// Vulkan viewport and scissor
+	{
+		VkCommandBuffer cmd = VK_CurrentCommandBuffer();
+		float x = (float)backEnd.viewParms.viewportX;
+		float y = (float)backEnd.viewParms.viewportY;
+		float w = (float)backEnd.viewParms.viewportWidth;
+		float h = (float)backEnd.viewParms.viewportHeight;
+
+		// Store viewport dimensions for depth range updates later
+		vk.viewportX = x;
+		vk.viewportY = y;
+		vk.viewportW = w;
+		vk.viewportH = h;
+
+		// Vulkan Y is top-down; Q3 viewportY is from bottom.
+		// Flip viewport: negative height + offset to top edge
+		VkViewport viewport;
+		viewport.x = x;
+		viewport.y = (float)glConfig.vidHeight - y;
+		viewport.width = w;
+		viewport.height = -h;
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		vkCmdSetViewport( cmd, 0, 1, &viewport );
+
+		VkRect2D scissor;
+		scissor.offset.x = (int32_t)x;
+		scissor.offset.y = (int32_t)(glConfig.vidHeight - y - h);
+		scissor.extent.width = (uint32_t)w;
+		scissor.extent.height = (uint32_t)h;
+		vkCmdSetScissor( cmd, 0, 1, &scissor );
+
+		vk.currentDepthRange = 0;
+	}
 }
 
 /*
@@ -445,6 +481,10 @@ void RB_BeginDrawingView (void) {
 	// 2D images again
 	backEnd.projection2D = qfalse;
 
+	// Vulkan: store projection and initial model matrix
+	Com_Memcpy( vk.projectionMatrix, backEnd.viewParms.projectionMatrix, 64 );
+	Com_Memcpy( vk.modelMatrix, backEnd.viewParms.world.modelMatrix, 64 );
+
 	//
 	// set the modelview matrix for the viewer
 	//
@@ -469,6 +509,41 @@ void RB_BeginDrawingView (void) {
 #endif
 	}
 	qglClear( clearBits );
+
+	// Vulkan: clear depth (and optionally color) between views.
+	// Critical for portals/mirrors: the reflected scene renders first,
+	// then depth is cleared, then the main view renders on top.
+	if ( vk.renderPassActive ) {
+		VkClearAttachment clearAtt[2];
+		int numClear = 0;
+
+		if ( clearBits & GL_DEPTH_BUFFER_BIT ) {
+			VkClearAttachment *ca = &clearAtt[numClear++];
+			ca->aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			ca->colorAttachment = 0;
+			ca->clearValue.depthStencil.depth = 1.0f;
+			ca->clearValue.depthStencil.stencil = 0;
+		}
+		if ( clearBits & GL_COLOR_BUFFER_BIT ) {
+			VkClearAttachment *ca = &clearAtt[numClear++];
+			ca->aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			ca->colorAttachment = 0;
+			ca->clearValue.color.float32[0] = 0.0f;
+			ca->clearValue.color.float32[1] = 0.0f;
+			ca->clearValue.color.float32[2] = 0.0f;
+			ca->clearValue.color.float32[3] = 1.0f;
+		}
+
+		if ( numClear > 0 ) {
+			VkClearRect rect;
+			rect.rect.offset.x = 0;
+			rect.rect.offset.y = 0;
+			rect.rect.extent = vk.swapchainExtent;
+			rect.baseArrayLayer = 0;
+			rect.layerCount = 1;
+			vkCmdClearAttachments( VK_CurrentCommandBuffer(), numClear, clearAtt, 1, &rect );
+		}
+	}
 
 	if ( ( backEnd.refdef.rdflags & RDF_HYPERSPACE ) )
 	{
@@ -624,14 +699,21 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 			qglLoadMatrixf( backEnd.orient.modelMatrix );
 
+			// Vulkan: track model matrix for MVP computation
+			Com_Memcpy( vk.modelMatrix, backEnd.orient.modelMatrix, 64 );
+
 			//
 			// change depthrange if needed
 			//
 			if ( oldDepthRange != depthRange ) {
 				if ( depthRange ) {
 					qglDepthRange (0, 0.3);
+					vk.currentDepthRange = 1;
+					VK_SetDepthRange( 0.0f, 0.3f );
 				} else {
 					qglDepthRange (0, 1);
+					vk.currentDepthRange = 0;
+					VK_SetDepthRange( 0.0f, 1.0f );
 				}
 				oldDepthRange = depthRange;
 			}
@@ -707,6 +789,39 @@ void	RB_SetGL2D (void) {
 	// set time for 2D shaders
 	backEnd.refdef.time = ri.Milliseconds();
 	backEnd.refdef.floatTime = backEnd.refdef.time * 0.001f;
+
+	// Vulkan: 2D orthographic projection and identity model matrix
+	{
+		float w = (float)glConfig.vidWidth;
+		float h = (float)glConfig.vidHeight;
+		// Match glOrtho(0, w, h, 0, 0, 1) exactly:
+		//   left=0, right=w, bottom=h, top=0, near=0, far=1
+		// VK_FixupProjection will remap Z from GL [-1,1] to Vulkan [0,1].
+		Com_Memset( vk.projectionMatrix, 0, 64 );
+		vk.projectionMatrix[0]  =  2.0f / w;          // 2/(r-l)
+		vk.projectionMatrix[5]  = -2.0f / h;          // 2/(t-b) = 2/(0-h)
+		vk.projectionMatrix[10] = -2.0f;              // -2/(f-n)
+		vk.projectionMatrix[12] = -1.0f;              // -(r+l)/(r-l)
+		vk.projectionMatrix[13] =  1.0f;              // -(t+b)/(t-b)
+		vk.projectionMatrix[14] = -1.0f;              // -(f+n)/(f-n)
+		vk.projectionMatrix[15] =  1.0f;
+
+		// Identity model matrix
+		Com_Memset( vk.modelMatrix, 0, 64 );
+		vk.modelMatrix[0]  = 1.0f;
+		vk.modelMatrix[5]  = 1.0f;
+		vk.modelMatrix[10] = 1.0f;
+		vk.modelMatrix[15] = 1.0f;
+
+		vk.is2D = qtrue;
+		vk.currentDepthRange = 0;
+
+		VkCommandBuffer cmd = VK_CurrentCommandBuffer();
+		VkViewport viewport = { 0, h, w, -h, 0.0f, 1.0f };
+		VkRect2D scissor = { {0, 0}, {(uint32_t)w, (uint32_t)h} };
+		vkCmdSetViewport( cmd, 0, 1, &viewport );
+		vkCmdSetScissor( cmd, 0, 1, &scissor );
+	}
 }
 
 
@@ -1082,6 +1197,10 @@ void RB_ExecuteRenderCommands( const void *data ) {
 	} else {
 		backEnd.smpFrame = 1;
 	}
+
+	// Vulkan: acquire swapchain image and begin command buffer
+	VK_BeginFrame();
+	VK_BeginRenderPass();
 
 	while ( 1 ) {
 		switch ( *(const int *)data ) {

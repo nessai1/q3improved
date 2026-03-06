@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_shade.c
 
 #include "tr_local.h"
+#include "vk_local.h"
 
 /*
 
@@ -242,6 +243,55 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 }
 
 /*
+=================
+R_GetAnimatedImage
+
+Returns the current image_t for a texture bundle (same logic as R_BindAnimatedImage
+but without calling GL_Bind).
+=================
+*/
+static image_t *R_GetAnimatedImage( textureBundle_t *bundle ) {
+	int		index;
+
+	if ( bundle->isVideoMap ) {
+		ri.CIN_RunCinematic(bundle->videoMapHandle);
+		ri.CIN_UploadCinematic(bundle->videoMapHandle);
+		return bundle->image[0];	// cinematic scratch image
+	}
+
+	if ( bundle->numImageAnimations <= 1 ) {
+		return bundle->image[0];
+	}
+
+	index = myftol( tess.shaderTime * bundle->imageAnimationSpeed * FUNCTABLE_SIZE );
+	index >>= FUNCTABLE_SIZE2;
+
+	if ( index < 0 ) {
+		index = 0;
+	}
+	index %= bundle->numImageAnimations;
+
+	return bundle->image[ index ];
+}
+
+/*
+=================
+VK_TexEnvFromGL
+
+Convert GL_MODULATE/GL_ADD/GL_REPLACE/GL_DECAL to VK_TEXENV_* constants.
+=================
+*/
+static int VK_TexEnvFromGL( int glTexEnv ) {
+	switch ( glTexEnv ) {
+		case GL_MODULATE: return VK_TEXENV_MODULATE;
+		case GL_ADD:      return VK_TEXENV_ADD;
+		case GL_REPLACE:  return VK_TEXENV_REPLACE;
+		case GL_DECAL:    return VK_TEXENV_DECAL;
+		default:          return VK_TEXENV_MODULATE;
+	}
+}
+
+/*
 ================
 DrawTris
 
@@ -380,6 +430,19 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	R_BindAnimatedImage( &pStage->bundle[1] );
 
 	R_DrawElements( input->numIndexes, input->indexes );
+
+	// --- Vulkan draw ---
+	{
+		image_t *t0 = R_GetAnimatedImage( &pStage->bundle[0] );
+		image_t *t1 = R_GetAnimatedImage( &pStage->bundle[1] );
+		int texEnv = r_lightmap->integer ? VK_TEXENV_REPLACE
+		             : VK_TexEnvFromGL( tess.shader->multitextureEnv );
+		VK_DrawStage( input->numVertexes, input->numIndexes,
+			input->xyz, input->svars.texcoords[0], input->svars.texcoords[1],
+			input->svars.colors, input->indexes, t0, t1,
+			pStage->stateBits, input->shader->cullType,
+			input->shader->polygonOffset, texEnv );
+	}
 
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
@@ -603,6 +666,19 @@ static void ProjectDlightTexture( void ) {
 			GL_State( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
 		}
 		R_DrawElements( numIndexes, hitIndexes );
+
+		// --- Vulkan draw ---
+		{
+			uint32_t dlightState = dl->additive
+				? (GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL)
+				: (GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL);
+			VK_DrawStage( tess.numVertexes, numIndexes,
+				tess.xyz, texCoordsArray, NULL, colorArray,
+				(glIndex_t *)hitIndexes, tr.dlightImage, NULL,
+				dlightState, tess.shader->cullType,
+				tess.shader->polygonOffset, VK_TEXENV_SINGLE );
+		}
+
 		backEnd.pc.c_totalIndexes += numIndexes;
 		backEnd.pc.c_dlightIndexes += numIndexes;
 	}
@@ -643,6 +719,18 @@ static void RB_FogPass( void ) {
 	}
 
 	R_DrawElements( tess.numIndexes, tess.indexes );
+
+	// --- Vulkan draw ---
+	{
+		uint32_t fogState = ( tess.shader->fogPass == FP_EQUAL )
+			? (GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHFUNC_EQUAL)
+			: (GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA);
+		VK_DrawStage( tess.numVertexes, tess.numIndexes,
+			tess.xyz, tess.svars.texcoords[0], NULL, tess.svars.colors,
+			tess.indexes, tr.fogImage, NULL,
+			fogState, tess.shader->cullType,
+			tess.shader->polygonOffset, VK_TEXENV_SINGLE );
+	}
 }
 
 /*
@@ -986,7 +1074,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			{
 				GL_Bind( tr.whiteImage );
 			}
-			else 
+			else
 				R_BindAnimatedImage( &pStage->bundle[0] );
 
 			GL_State( pStage->stateBits );
@@ -995,6 +1083,24 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			// draw
 			//
 			R_DrawElements( input->numIndexes, input->indexes );
+
+			// --- Vulkan draw ---
+			{
+				image_t *t0;
+				if ( pStage->bundle[0].vertexLightmap &&
+					( (r_vertexLight->integer && !r_uiFullScreen->integer) ||
+					  glConfig.hardwareType == GLHW_PERMEDIA2 ) && r_lightmap->integer )
+				{
+					t0 = tr.whiteImage;
+				} else {
+					t0 = R_GetAnimatedImage( &pStage->bundle[0] );
+				}
+				VK_DrawStage( input->numVertexes, input->numIndexes,
+					input->xyz, input->svars.texcoords[0], NULL,
+					input->svars.colors, input->indexes, t0, NULL,
+					pStage->stateBits, input->shader->cullType,
+					input->shader->polygonOffset, VK_TEXENV_SINGLE );
+			}
 		}
 		// allow skipping out to show just lightmaps during development
 		if ( r_lightmap->integer && ( pStage->bundle[0].isLightmap || pStage->bundle[1].isLightmap || pStage->bundle[0].vertexLightmap ) )
@@ -1174,7 +1280,23 @@ void RB_StageIteratorVertexLitTexture( void )
 	GL_State( tess.xstages[0]->stateBits );
 	R_DrawElements( input->numIndexes, input->indexes );
 
-	// 
+	// --- Vulkan draw ---
+	{
+		int i;
+		// De-interleave texcoords from tess.texCoords (stride 16) to svars (stride 8)
+		for ( i = 0; i < input->numVertexes; i++ ) {
+			tess.svars.texcoords[0][i][0] = tess.texCoords[i][0][0];
+			tess.svars.texcoords[0][i][1] = tess.texCoords[i][0][1];
+		}
+		image_t *t0 = R_GetAnimatedImage( &tess.xstages[0]->bundle[0] );
+		VK_DrawStage( input->numVertexes, input->numIndexes,
+			input->xyz, tess.svars.texcoords[0], NULL,
+			tess.svars.colors, input->indexes, t0, NULL,
+			tess.xstages[0]->stateBits, input->shader->cullType,
+			input->shader->polygonOffset, VK_TEXENV_SINGLE );
+	}
+
+	//
 	// now do any dynamic lighting needed
 	//
 	if ( tess.dlightBits && tess.shader->sort <= SS_OPAQUE ) {
@@ -1188,10 +1310,10 @@ void RB_StageIteratorVertexLitTexture( void )
 		RB_FogPass();
 	}
 
-	// 
+	//
 	// unlock arrays
 	//
-	if (qglUnlockArraysEXT) 
+	if (qglUnlockArraysEXT)
 	{
 		qglUnlockArraysEXT();
 		GLimp_LogComment( "glUnlockArraysEXT\n" );
@@ -1267,6 +1389,26 @@ void RB_StageIteratorLightmappedMultitexture( void ) {
 
 	R_DrawElements( input->numIndexes, input->indexes );
 
+	// --- Vulkan draw ---
+	{
+		int i;
+		// De-interleave texcoords from tess.texCoords (stride 16) to svars (stride 8)
+		for ( i = 0; i < input->numVertexes; i++ ) {
+			tess.svars.texcoords[0][i][0] = tess.texCoords[i][0][0];
+			tess.svars.texcoords[0][i][1] = tess.texCoords[i][0][1];
+			tess.svars.texcoords[1][i][0] = tess.texCoords[i][1][0];
+			tess.svars.texcoords[1][i][1] = tess.texCoords[i][1][1];
+		}
+		image_t *t0 = R_GetAnimatedImage( &tess.xstages[0]->bundle[0] );
+		image_t *t1 = R_GetAnimatedImage( &tess.xstages[0]->bundle[1] );
+		int texEnv = r_lightmap->integer ? VK_TEXENV_REPLACE : VK_TEXENV_MODULATE;
+		VK_DrawStage( input->numVertexes, input->numIndexes,
+			input->xyz, tess.svars.texcoords[0], tess.svars.texcoords[1],
+			tess.constantColor255, input->indexes, t0, t1,
+			GLS_DEFAULT, input->shader->cullType,
+			input->shader->polygonOffset, texEnv );
+	}
+
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
 	//
@@ -1279,7 +1421,7 @@ void RB_StageIteratorLightmappedMultitexture( void ) {
 	qglShadeModel( GL_SMOOTH );
 #endif
 
-	// 
+	//
 	// now do any dynamic lighting needed
 	//
 	if ( tess.dlightBits && tess.shader->sort <= SS_OPAQUE ) {

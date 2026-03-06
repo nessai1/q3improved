@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_image.c
 #include "tr_local.h"
+#include "vk_local.h"
 
 /*
  * Include file for users of JPEG library.
@@ -767,24 +768,67 @@ image_t *R_CreateImage( const char *name, const byte *pic, int width, int height
 		GL_SelectTexture( image->TMU );
 	}
 
+	// --- Vulkan image creation (BEFORE Upload32 which destroys pic data) ---
+	{
+		// Compute power-of-two upload dimensions (same logic as Upload32)
+		int uw, uh;
+		for ( uw = 1; uw < width; uw <<= 1 )
+			;
+		for ( uh = 1; uh < height; uh <<= 1 )
+			;
+		if ( r_roundImagesDown->integer && uw > width )
+			uw >>= 1;
+		if ( r_roundImagesDown->integer && uh > height )
+			uh >>= 1;
+		if ( allowPicmip ) {
+			uw >>= r_picmip->integer;
+			uh >>= r_picmip->integer;
+		}
+		if ( uw < 1 ) uw = 1;
+		if ( uh < 1 ) uh = 1;
+		while ( uw > glConfig.maxTextureSize || uh > glConfig.maxTextureSize ) {
+			uw >>= 1;
+			uh >>= 1;
+		}
+
+		uint32_t mipLevels = 1;
+		if ( mipmap ) {
+			int dim = uw > uh ? uw : uh;
+			while ( dim > 1 ) { dim >>= 1; mipLevels++; }
+		}
+		image->vkMipLevels = mipLevels;
+
+		byte *vkData = NULL;
+		qboolean needFree = qfalse;
+		if ( uw != width || uh != height ) {
+			vkData = (byte *)ri.Hunk_AllocateTempMemory( uw * uh * 4 );
+			ResampleTexture( (unsigned *)pic, width, height, (unsigned *)vkData, uw, uh );
+			needFree = qtrue;
+		} else {
+			vkData = (byte *)pic;
+		}
+
+		VK_CreateImage( uw, uh, VK_FORMAT_R8G8B8A8_UNORM, mipLevels,
+			VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			&image->vkImage, &image->vkMemory );
+		VK_UploadImageData( image->vkImage, vkData, uw, uh, mipLevels );
+		image->vkImageView = VK_CreateImageView( image->vkImage, VK_FORMAT_R8G8B8A8_UNORM,
+			VK_IMAGE_ASPECT_COLOR_BIT, mipLevels );
+
+		if ( needFree ) {
+			ri.Hunk_FreeTempMemory( vkData );
+		}
+	}
+
 	GL_Bind(image);
 
-	Upload32( (unsigned *)pic, image->width, image->height, 
+	Upload32( (unsigned *)pic, image->width, image->height,
 								image->mipmap,
 								allowPicmip,
 								isLightmap,
 								&image->internalFormat,
 								&image->uploadWidth,
 								&image->uploadHeight );
-
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, glWrapClampMode );
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, glWrapClampMode );
-
-	qglBindTexture( GL_TEXTURE_2D, 0 );
-
-	if ( image->TMU == 1 ) {
-		GL_SelectTexture( 0 );
-	}
 
 	hash = generateHashValue(name);
 	image->next = hashTable[hash];

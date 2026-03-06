@@ -1,0 +1,319 @@
+/*
+===========================================================================
+Copyright (C) 1999-2005 Id Software, Inc.
+
+This file is part of Quake III Arena source code.
+===========================================================================
+*/
+
+/*
+** VK_PIPELINE.C
+**
+** Pipeline cache: stateBits+cullType+texEnv -> VkPipeline.
+** Lazily creates pipelines on first use.
+*/
+
+#include "tr_local.h"
+#include "vk_local.h"
+#include <string.h>
+
+// ========================================================================
+// Shader module loading
+// ========================================================================
+
+static VkShaderModule VK_LoadShaderModule( const char *filename )
+{
+  void *code;
+  int size;
+
+  size = ri.FS_ReadFile( filename, &code );
+  if ( size <= 0 || !code ) {
+    ri.Error( ERR_FATAL, "VK_LoadShaderModule: failed to load %s", filename );
+    return VK_NULL_HANDLE;
+  }
+
+  VkShaderModuleCreateInfo createInfo = {};
+  createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  createInfo.codeSize = size;
+  createInfo.pCode = (const uint32_t *)code;
+
+  VkShaderModule shaderModule;
+  if ( vkCreateShaderModule( vk.device, &createInfo, NULL, &shaderModule ) != VK_SUCCESS ) {
+    ri.FS_FreeFile( code );
+    ri.Error( ERR_FATAL, "VK_LoadShaderModule: vkCreateShaderModule failed for %s", filename );
+    return VK_NULL_HANDLE;
+  }
+
+  ri.FS_FreeFile( code );
+  ri.Printf( PRINT_ALL, "Loaded shader: %s (%d bytes)\n", filename, size );
+  return shaderModule;
+}
+
+// ========================================================================
+// Blend factor mapping (GLS_* -> VkBlendFactor)
+// ========================================================================
+
+static VkBlendFactor VK_SrcBlendFactor( uint32_t stateBits )
+{
+  switch ( stateBits & GLS_SRCBLEND_BITS ) {
+  case GLS_SRCBLEND_ZERO:                 return VK_BLEND_FACTOR_ZERO;
+  case GLS_SRCBLEND_ONE:                  return VK_BLEND_FACTOR_ONE;
+  case GLS_SRCBLEND_DST_COLOR:            return VK_BLEND_FACTOR_DST_COLOR;
+  case GLS_SRCBLEND_ONE_MINUS_DST_COLOR:  return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+  case GLS_SRCBLEND_SRC_ALPHA:            return VK_BLEND_FACTOR_SRC_ALPHA;
+  case GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  case GLS_SRCBLEND_DST_ALPHA:            return VK_BLEND_FACTOR_DST_ALPHA;
+  case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+  case GLS_SRCBLEND_ALPHA_SATURATE:       return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+  default:                                return VK_BLEND_FACTOR_ONE;
+  }
+}
+
+static VkBlendFactor VK_DstBlendFactor( uint32_t stateBits )
+{
+  switch ( stateBits & GLS_DSTBLEND_BITS ) {
+  case GLS_DSTBLEND_ZERO:                 return VK_BLEND_FACTOR_ZERO;
+  case GLS_DSTBLEND_ONE:                  return VK_BLEND_FACTOR_ONE;
+  case GLS_DSTBLEND_SRC_COLOR:            return VK_BLEND_FACTOR_SRC_COLOR;
+  case GLS_DSTBLEND_ONE_MINUS_SRC_COLOR:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+  case GLS_DSTBLEND_SRC_ALPHA:            return VK_BLEND_FACTOR_SRC_ALPHA;
+  case GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  case GLS_DSTBLEND_DST_ALPHA:            return VK_BLEND_FACTOR_DST_ALPHA;
+  case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+  default:                                return VK_BLEND_FACTOR_ZERO;
+  }
+}
+
+// ========================================================================
+// Pipeline creation
+// ========================================================================
+
+static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key )
+{
+  // --- Vertex input ---
+  VkVertexInputBindingDescription bindings[4] = {};
+  bindings[0] = { 0, 16, VK_VERTEX_INPUT_RATE_VERTEX };   // position (vec4 padded)
+  bindings[1] = { 1, 8,  VK_VERTEX_INPUT_RATE_VERTEX };   // texcoord0
+  bindings[2] = { 2, 8,  VK_VERTEX_INPUT_RATE_VERTEX };   // texcoord1
+  bindings[3] = { 3, 4,  VK_VERTEX_INPUT_RATE_VERTEX };   // color (RGBA8)
+
+  VkVertexInputAttributeDescription attrs[4] = {};
+  attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 };    // position
+  attrs[1] = { 1, 1, VK_FORMAT_R32G32_SFLOAT, 0 };       // texcoord0
+  attrs[2] = { 2, 2, VK_FORMAT_R32G32_SFLOAT, 0 };       // texcoord1
+  attrs[3] = { 3, 3, VK_FORMAT_R8G8B8A8_UNORM, 0 };      // color
+
+  VkPipelineVertexInputStateCreateInfo vertexInput = {};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInput.vertexBindingDescriptionCount = 4;
+  vertexInput.pVertexBindingDescriptions = bindings;
+  vertexInput.vertexAttributeDescriptionCount = 4;
+  vertexInput.pVertexAttributeDescriptions = attrs;
+
+  // --- Input assembly ---
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  // --- Viewport (dynamic) ---
+  VkPipelineViewportStateCreateInfo viewportState = {};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+
+  // --- Rasterization ---
+  VkPipelineRasterizationStateCreateInfo rasterizer = {};
+  rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterizer.depthClampEnable = VK_FALSE;
+  rasterizer.rasterizerDiscardEnable = VK_FALSE;
+  rasterizer.polygonMode = ( key->stateBits & GLS_POLYMODE_LINE ) ?
+    VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+  rasterizer.lineWidth = 1.0f;
+  rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+  rasterizer.depthBiasEnable = key->polygonOffset ? VK_TRUE : VK_FALSE;
+  rasterizer.depthBiasConstantFactor = key->polygonOffset ? -1.0f : 0.0f;
+  rasterizer.depthBiasSlopeFactor = key->polygonOffset ? -1.0f : 0.0f;
+
+  switch ( key->cullType ) {
+  case CT_FRONT_SIDED:
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    break;
+  case CT_BACK_SIDED:
+    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
+    break;
+  case CT_TWO_SIDED:
+  default:
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    break;
+  }
+
+  // --- Multisample ---
+  VkPipelineMultisampleStateCreateInfo multisampling = {};
+  multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.sampleShadingEnable = VK_FALSE;
+  multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  // --- Depth/Stencil ---
+  VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+  if ( key->stateBits & GLS_DEPTHTEST_DISABLE ) {
+    depthStencil.depthTestEnable = VK_FALSE;
+  } else {
+    depthStencil.depthTestEnable = VK_TRUE;
+  }
+
+  depthStencil.depthWriteEnable = ( key->stateBits & GLS_DEPTHMASK_TRUE ) ? VK_TRUE : VK_FALSE;
+
+  if ( key->stateBits & GLS_DEPTHFUNC_EQUAL ) {
+    depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
+  } else {
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+  }
+
+  depthStencil.depthBoundsTestEnable = VK_FALSE;
+  depthStencil.stencilTestEnable = VK_FALSE;
+
+  // --- Color blend ---
+  VkPipelineColorBlendAttachmentState blendAttachment = {};
+  blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+  uint32_t srcBits = key->stateBits & GLS_SRCBLEND_BITS;
+  uint32_t dstBits = key->stateBits & GLS_DSTBLEND_BITS;
+
+  if ( srcBits != 0 || dstBits != 0 ) {
+    blendAttachment.blendEnable = VK_TRUE;
+    blendAttachment.srcColorBlendFactor = VK_SrcBlendFactor( key->stateBits );
+    blendAttachment.dstColorBlendFactor = VK_DstBlendFactor( key->stateBits );
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.srcAlphaBlendFactor = VK_SrcBlendFactor( key->stateBits );
+    blendAttachment.dstAlphaBlendFactor = VK_DstBlendFactor( key->stateBits );
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+  }
+
+  VkPipelineColorBlendStateCreateInfo colorBlend = {};
+  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlend.attachmentCount = 1;
+  colorBlend.pAttachments = &blendAttachment;
+
+  // --- Dynamic state ---
+  VkDynamicState dynamicStates[] = {
+    VK_DYNAMIC_STATE_VIEWPORT,
+    VK_DYNAMIC_STATE_SCISSOR,
+  };
+  VkPipelineDynamicStateCreateInfo dynamicState = {};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamicStates;
+
+  // --- Specialization constants ---
+  int alphaTestMode = 0;
+  uint32_t atestBits = key->stateBits & GLS_ATEST_BITS;
+  if ( atestBits == GLS_ATEST_GT_0 )  alphaTestMode = 1;
+  if ( atestBits == GLS_ATEST_LT_80 ) alphaTestMode = 2;
+  if ( atestBits == GLS_ATEST_GE_80 ) alphaTestMode = 3;
+
+  int texEnvMode = key->texEnv;
+
+  VkSpecializationMapEntry specEntries[2] = {};
+  specEntries[0] = { 0, 0, sizeof(int) };                    // ALPHA_TEST
+  specEntries[1] = { 1, sizeof(int), sizeof(int) };          // TEX_ENV
+
+  int specData[2] = { alphaTestMode, texEnvMode };
+
+  VkSpecializationInfo fragSpec = {};
+  fragSpec.mapEntryCount = 2;
+  fragSpec.pMapEntries = specEntries;
+  fragSpec.dataSize = sizeof(specData);
+  fragSpec.pData = specData;
+
+  // --- Shader stages ---
+  VkPipelineShaderStageCreateInfo stages[2] = {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vk.vertShader;
+  stages[0].pName = "main";
+
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = vk.fragShader;
+  stages[1].pName = "main";
+  stages[1].pSpecializationInfo = &fragSpec;
+
+  // --- Pipeline ---
+  VkGraphicsPipelineCreateInfo pipelineInfo = {};
+  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineInfo.stageCount = 2;
+  pipelineInfo.pStages = stages;
+  pipelineInfo.pVertexInputState = &vertexInput;
+  pipelineInfo.pInputAssemblyState = &inputAssembly;
+  pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pRasterizationState = &rasterizer;
+  pipelineInfo.pMultisampleState = &multisampling;
+  pipelineInfo.pDepthStencilState = &depthStencil;
+  pipelineInfo.pColorBlendState = &colorBlend;
+  pipelineInfo.pDynamicState = &dynamicState;
+  pipelineInfo.layout = vk.pipelineLayout;
+  pipelineInfo.renderPass = vk.renderPass;
+  pipelineInfo.subpass = 0;
+
+  VkPipeline pipeline;
+  if ( vkCreateGraphicsPipelines( vk.device, vk.pipelineCache, 1, &pipelineInfo,
+                                  NULL, &pipeline ) != VK_SUCCESS ) {
+    ri.Error( ERR_FATAL, "VK_CreatePipeline: vkCreateGraphicsPipelines failed" );
+  }
+
+  return pipeline;
+}
+
+// ========================================================================
+// Public interface
+// ========================================================================
+
+void VK_InitPipelines( void )
+{
+  // Load shader modules
+  vk.vertShader = VK_LoadShaderModule( "shaders/generic.vert.spv" );
+  vk.fragShader = VK_LoadShaderModule( "shaders/generic.frag.spv" );
+
+  // Create pipeline cache
+  VkPipelineCacheCreateInfo cacheInfo = {};
+  cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+  if ( vkCreatePipelineCache( vk.device, &cacheInfo, NULL, &vk.pipelineCache ) != VK_SUCCESS )
+    ri.Error( ERR_FATAL, "VK_InitPipelines: vkCreatePipelineCache failed" );
+
+  vk.numPipelines = 0;
+}
+
+void VK_DestroyPipelines( void )
+{
+  for ( int i = 0; i < vk.numPipelines; i++ ) {
+    vkDestroyPipeline( vk.device, vk.pipelines[i].pipeline, NULL );
+  }
+  vk.numPipelines = 0;
+}
+
+VkPipeline VK_GetPipeline( const vkPipelineKey_t *key )
+{
+  uint64_t hash = VK_PipelineKeyHash( key );
+
+  // Linear search (fast enough for ~40 pipelines)
+  for ( int i = 0; i < vk.numPipelines; i++ ) {
+    if ( vk.pipelines[i].key == hash )
+      return vk.pipelines[i].pipeline;
+  }
+
+  // Create new pipeline
+  if ( vk.numPipelines >= VK_MAX_PIPELINES )
+    ri.Error( ERR_FATAL, "VK_GetPipeline: too many pipelines (%d)", vk.numPipelines );
+
+  VkPipeline pipeline = VK_CreatePipeline( key );
+
+  vk.pipelines[vk.numPipelines].key = hash;
+  vk.pipelines[vk.numPipelines].pipeline = pipeline;
+  vk.numPipelines++;
+
+  return pipeline;
+}
