@@ -25,6 +25,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "../qcommon/cm_public.h"
 
 //#define	PRE_RELEASE_DEMO
@@ -1065,5 +1069,9 @@ extern huffman_t clientHuffTables;
 #define SV_DECODE_START		12
 #define	CL_ENCODE_START		12
 #define CL_DECODE_START		4
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // _QCOMMON_H_

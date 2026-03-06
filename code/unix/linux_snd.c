@@ -127,7 +127,7 @@ qboolean SNDDMA_Init(void)
 
 	dma.samples          = SND_BUFFER_SAMPLES;
 	dma.submission_chunk = 1;
-	dma.buffer           = calloc(1, dma.samples * (dma.samplebits / 8));
+	dma.buffer           = (byte *)calloc(1, dma.samples * (dma.samplebits / 8));
 	if (!dma.buffer) {
 		Com_Printf("SDL audio: failed to allocate DMA buffer\n");
 		SDL_CloseAudio();

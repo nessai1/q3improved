@@ -26,6 +26,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // q_shared.h -- included first by ALL program modules.
 // A user mod should never modify this file
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define	Q3_VERSION		"Q3 1.32b"
 // 1.32 released 7-10-2002
 
@@ -328,7 +332,9 @@ static float LittleFloat (const float *l) { return FloatSwap(l); }
 
 typedef unsigned char 		byte;
 
-typedef enum {qfalse, qtrue}	qboolean;
+typedef int qboolean;
+#define qfalse	0
+#define qtrue	1
 
 typedef int		qhandle_t;
 typedef int		sfxHandle_t;
@@ -337,7 +343,11 @@ typedef int		clipHandle_t;
 
 
 #ifndef NULL
+#ifdef __cplusplus
+#define NULL nullptr
+#else
 #define NULL ((void *)0)
+#endif
 #endif
 
 #define	MAX_QINT			0x7fffffff
@@ -1428,5 +1438,9 @@ typedef enum _flag_status {
 #define CDKEY_LEN 16
 #define CDCHKSUM_LEN 2
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif	// __Q_SHARED_H

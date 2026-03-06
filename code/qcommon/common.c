@@ -910,7 +910,7 @@ void *Z_TagMallocDebug( int size, int tag, char *label, char *file, int line ) {
 void *Z_TagMalloc( int size, int tag ) {
 #endif
 	int		extra, allocSize;
-	memblock_t	*start, *rover, *new, *base;
+	memblock_t	*start, *rover, *newblock, *base;
 	memzone_t *zone;
 
 	if (!tag) {
@@ -959,14 +959,14 @@ void *Z_TagMalloc( int size, int tag ) {
 	extra = base->size - size;
 	if (extra > MINFRAGMENT) {
 		// there will be a free fragment after the allocated block
-		new = (memblock_t *) ((byte *)base + size );
-		new->size = extra;
-		new->tag = 0;			// free block
-		new->prev = base;
-		new->id = ZONEID;
-		new->next = base->next;
-		new->next->prev = new;
-		base->next = new;
+		newblock = (memblock_t *) ((byte *)base + size );
+		newblock->size = extra;
+		newblock->tag = 0;			// free block
+		newblock->prev = base;
+		newblock->id = ZONEID;
+		newblock->next = base->next;
+		newblock->next->prev = newblock;
+		base->next = newblock;
 		base->size = size;
 	}
 	
@@ -1151,7 +1151,7 @@ char *CopyString( const char *in ) {
 			return ((char *)&numberstring[in[0]-'0']) + sizeof(memblock_t);
 		}
 	}
-	out = S_Malloc (strlen(in)+1);
+	out = (char *)S_Malloc (strlen(in)+1);
 	strcpy (out, in);
 	return out;
 }
@@ -1376,7 +1376,7 @@ Com_InitZoneMemory
 void Com_InitSmallZoneMemory( void ) {
 	s_smallZoneTotal = 512 * 1024;
 	// bk001205 - was malloc
-	smallzone = calloc( s_smallZoneTotal, 1 );
+	smallzone = (memzone_t *)calloc( s_smallZoneTotal, 1 );
 	if ( !smallzone ) {
 		Com_Error( ERR_FATAL, "Small zone data failed to allocate %1.1f megs", (float)s_smallZoneTotal / (1024*1024) );
 	}
@@ -1397,7 +1397,7 @@ void Com_InitZoneMemory( void ) {
 	}
 
 	// bk001205 - was malloc
-	mainzone = calloc( s_zoneTotal, 1 );
+	mainzone = (memzone_t *)calloc( s_zoneTotal, 1 );
 	if ( !mainzone ) {
 		Com_Error( ERR_FATAL, "Zone data failed to allocate %i megs", s_zoneTotal / (1024*1024) );
 	}
@@ -1523,7 +1523,7 @@ void Com_InitHunkMemory( void ) {
 
 
 	// bk001205 - was malloc
-	s_hunkData = calloc( s_hunkTotal + 31, 1 );
+	s_hunkData = (byte *)calloc( s_hunkTotal + 31, 1 );
 	if ( !s_hunkData ) {
 		Com_Error( ERR_FATAL, "Hunk data failed to allocate %i megs", s_hunkTotal / (1024*1024) );
 	}
@@ -1859,9 +1859,9 @@ void Hunk_Trash( void ) {
 	Hunk_SwapBanks();
 
 	if ( hunk_permanent == &hunk_low ) {
-		buf = (void *)(s_hunkData + hunk_permanent->permanent);
+		buf = (char *)(s_hunkData + hunk_permanent->permanent);
 	} else {
-		buf = (void *)(s_hunkData + s_hunkTotal - hunk_permanent->permanent );
+		buf = (char *)(s_hunkData + s_hunkTotal - hunk_permanent->permanent );
 	}
 	length = hunk_permanent->permanent;
 
@@ -3246,7 +3246,7 @@ static void keyConcatArgs( void ) {
 static void ConcatRemaining( const char *src, const char *start ) {
 	char *str;
 
-	str = strstr(src, start);
+	str = (char *)strstr(src, start);
 	if (!str) {
 		keyConcatArgs();
 		return;

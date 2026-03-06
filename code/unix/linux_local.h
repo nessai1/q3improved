@@ -35,10 +35,16 @@ void IN_Shutdown (void);
 void IN_JoyMove( void );
 void IN_StartupJoystick( void );
 
-// GL subsystem
+// GL subsystem -- defined in linux_qgl.c which stays as C
+#ifdef __cplusplus
+extern "C" {
+#endif
 qboolean QGL_Init( const char *dllname );
 void QGL_EnableLogging( qboolean enable );
 void QGL_Shutdown( void );
+#ifdef __cplusplus
+}
+#endif
 
 // bk001130 - win32
 // void IN_JoystickCommands (void);

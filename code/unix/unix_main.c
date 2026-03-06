@@ -56,7 +56,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "linux_local.h" // bk001204
 
 // Structure containing functions exported from refresh DLL
-refexport_t re;
+extern refexport_t re;
 
 unsigned  sys_frame_time;
 
@@ -780,8 +780,8 @@ void *Sys_LoadDll( const char *name, char *fqpath ,
   } else
     Com_Printf ( "Sys_LoadDll(%s): succeeded ...\n", fn ); 
 
-  dllEntry = dlsym( libHandle, "dllEntry" ); 
-  *entryPoint = dlsym( libHandle, "vmMain" );
+  *(void **)&dllEntry = dlsym( libHandle, "dllEntry" );
+  *(void **)entryPoint = dlsym( libHandle, "vmMain" );
   if ( !*entryPoint || !dllEntry )
   {
     err = dlerror();
@@ -1099,7 +1099,7 @@ sysEvent_t Sys_GetEvent( void ) {
     int   len;
 
     len = strlen( s ) + 1;
-    b = Z_Malloc( len );
+    b = (char *)Z_Malloc( len );
     strcpy( b, s );
     Sys_QueEvent( 0, SE_CONSOLE, 0, 0, len, b );
   }
@@ -1116,7 +1116,7 @@ sysEvent_t Sys_GetEvent( void ) {
 
     // copy out to a seperate buffer for qeueing
     len = sizeof( netadr_t ) + netmsg.cursize;
-    buf = Z_Malloc( len );
+    buf = (netadr_t *)Z_Malloc( len );
     *buf = adr;
     memcpy( buf+1, netmsg.data, netmsg.cursize );
     Sys_QueEvent( 0, SE_PACKET, 0, 0, len, buf );
@@ -1240,7 +1240,7 @@ int main ( int argc, char* argv[] )
   // merge the command line, this is kinda silly
   for (len = 1, i = 1; i < argc; i++)
     len += strlen(argv[i]) + 1;
-  cmdline = malloc(len);
+  cmdline = (char *)malloc(len);
   *cmdline = 0;
   for (i = 1; i < argc; i++)
   {

@@ -1104,7 +1104,7 @@ static void ParseDeform( char **text ) {
 		if ( n < 0 || n > 7 ) {
 			n = 0;
 		}
-		ds->deformation = DEFORM_TEXT0 + n;
+		ds->deformation = (deform_t)(DEFORM_TEXT0 + n);
 		return;
 	}
 
@@ -1975,7 +1975,7 @@ static shader_t *GeneratePermanentShader( void ) {
 		return tr.defaultShader;
 	}
 
-	newShader = ri.Hunk_Alloc( sizeof( shader_t ), h_low );
+	newShader = (shader_t *)ri.Hunk_Alloc( sizeof( shader_t ), h_low );
 
 	*newShader = shader;
 
@@ -1997,12 +1997,12 @@ static shader_t *GeneratePermanentShader( void ) {
 		if ( !stages[i].active ) {
 			break;
 		}
-		newShader->stages[i] = ri.Hunk_Alloc( sizeof( stages[i] ), h_low );
+		newShader->stages[i] = (shaderStage_t *)ri.Hunk_Alloc( sizeof( stages[i] ), h_low );
 		*newShader->stages[i] = stages[i];
 
 		for ( b = 0 ; b < NUM_TEXTURE_BUNDLES ; b++ ) {
 			size = newShader->stages[i]->bundle[b].numTexMods * sizeof( texModInfo_t );
-			newShader->stages[i]->bundle[b].texMods = ri.Hunk_Alloc( size, h_low );
+			newShader->stages[i]->bundle[b].texMods = (texModInfo_t *)ri.Hunk_Alloc( size, h_low );
 			Com_Memcpy( newShader->stages[i]->bundle[b].texMods, stages[i].bundle[b].texMods, size );
 		}
 	}
@@ -2880,7 +2880,7 @@ static void ScanAndLoadShaderFiles( void )
 	}
 
 	// build single large buffer
-	s_shaderText = ri.Hunk_Alloc( sum + numShaders*2, h_low );
+	s_shaderText = (char *)ri.Hunk_Alloc( sum + numShaders*2, h_low );
 
 	// free in reverse order, so the temp files are all dumped
 	for ( i = numShaders - 1; i >= 0 ; i-- ) {
@@ -2923,7 +2923,7 @@ static void ScanAndLoadShaderFiles( void )
 
 	size += MAX_SHADERTEXT_HASH;
 
-	hashMem = ri.Hunk_Alloc( size * sizeof(char *), h_low );
+	hashMem = (char *)ri.Hunk_Alloc( size * sizeof(char *), h_low );
 
 	for (i = 0; i < MAX_SHADERTEXT_HASH; i++) {
 		shaderTextHashTable[i] = (char **) hashMem;

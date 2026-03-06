@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include <unistd.h>   // AH - for size_t
 #include <string.h>
+#include "../game/q_shared.h"
 
 // bk001207 - we need something under Linux, too. Mac?
 #if 1 // defined(C_ONLY) // bk010102 - dedicated?

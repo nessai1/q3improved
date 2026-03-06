@@ -176,7 +176,7 @@ qboolean	Sys_GetPacket (netadr_t *net_from, msg_t *net_message)
 
 		fromlen = sizeof(from);
 		ret = recvfrom (net_socket, net_message->data, net_message->maxsize
-			, 0, (struct sockaddr *)&from, &fromlen);
+			, 0, (struct sockaddr *)&from, (socklen_t *)&fromlen);
 
 		SockadrToNetadr (&from, net_from);
 		// bk000305: was missing
@@ -558,7 +558,7 @@ int NET_IPSocket (char *net_interface, int port)
 
 	address.sin_family = AF_INET;
 
-	if( bind (newsocket, (void *)&address, sizeof(address)) == -1)
+	if( bind (newsocket, (const struct sockaddr *)&address, sizeof(address)) == -1)
 	{
 		Com_Printf ("ERROR: UDP_OpenSocket: bind: %s\n", NET_ErrorString());
 		close (newsocket);

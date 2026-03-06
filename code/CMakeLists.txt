@@ -152,6 +152,18 @@ set(GAME_SHARED_SRC
   ${S}/game/q_math.c
 )
 
+# --- Compile all engine C sources as C++ ---
+set(ALL_ENGINE_C_SRC
+  ${RENDERER_SRC} ${CLIENT_SRC} ${SOUND_SRC}
+  ${QCOMMON_SRC} ${VM_SRC} ${SERVER_SRC}
+  ${UNIX_CLIENT_SRC} ${UNIX_SERVER_SRC} ${NULL_SRC}
+  ${GAME_SHARED_SRC}
+)
+set_source_files_properties(${ALL_ENGINE_C_SRC} PROPERTIES LANGUAGE CXX)
+# Keep linux_qgl.c as C -- 346 dlsym->fnptr assignments not worth casting
+# (will be replaced by Vulkan loader)
+set_source_files_properties(${S}/unix/linux_qgl.c PROPERTIES LANGUAGE C)
+
 # Common include directories for engine targets
 set(ENGINE_INCLUDES
   ${S}

@@ -105,7 +105,7 @@ void R_AddPolygonSurfaces( void ) {
 
 	for ( i = 0, poly = tr.refdef.polys; i < tr.refdef.numPolys ; i++, poly++ ) {
 		sh = R_GetShaderByHandle( poly->hShader );
-		R_AddDrawSurf( ( void * )poly, sh, poly->fogIndex, qfalse );
+		R_AddDrawSurf( (surfaceType_t *)poly, sh, poly->fogIndex, qfalse );
 	}
 }
 
@@ -390,10 +390,10 @@ void RE_RenderScene( const refdef_t *fd ) {
 	parms.fovX = tr.refdef.fov_x;
 	parms.fovY = tr.refdef.fov_y;
 
-	VectorCopy( fd->vieworg, parms.or.origin );
-	VectorCopy( fd->viewaxis[0], parms.or.axis[0] );
-	VectorCopy( fd->viewaxis[1], parms.or.axis[1] );
-	VectorCopy( fd->viewaxis[2], parms.or.axis[2] );
+	VectorCopy( fd->vieworg, parms.orient.origin );
+	VectorCopy( fd->viewaxis[0], parms.orient.axis[0] );
+	VectorCopy( fd->viewaxis[1], parms.orient.axis[1] );
+	VectorCopy( fd->viewaxis[2], parms.orient.axis[2] );
 
 	VectorCopy( fd->vieworg, parms.pvsOrigin );
 

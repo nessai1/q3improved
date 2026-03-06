@@ -1436,7 +1436,7 @@ e_status CIN_RunCinematic (int handle)
 
 	// we need to use CL_ScaledMilliseconds because of the smp mode calls from the renderer
 	thisTime = CL_ScaledMilliseconds()*com_timescale->value;
-	if (cinTable[currentHandle].shader && (abs(thisTime - cinTable[currentHandle].lastTime))>100) {
+	if (cinTable[currentHandle].shader && (abs((int)(thisTime - cinTable[currentHandle].lastTime)))>100) {
 		cinTable[currentHandle].startTime += thisTime - cinTable[currentHandle].lastTime;
 	}
 	// we need to use CL_ScaledMilliseconds because of the smp mode calls from the renderer
@@ -1614,7 +1614,7 @@ void CIN_DrawCinematic (int handle) {
                 }
                 
 		buf3 = (int*)buf;
-		buf2 = Hunk_AllocateTempMemory( 256*256*4 );
+		buf2 = (int *)Hunk_AllocateTempMemory( 256*256*4 );
                 if (xm==2 && ym==2) {
                     byte *bc2, *bc3;
                     int	ic, iiy;
