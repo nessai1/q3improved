@@ -9,11 +9,11 @@ add_subdirectory(splines)
 
 # --- Find system dependencies ---
 if(BUILD_CLIENT)
-  find_package(X11 REQUIRED)
-  # Xxf86vm is needed for video mode switching
-  if(NOT X11_Xxf86vm_FOUND)
-    message(FATAL_ERROR "X11 Xxf86vm extension not found (libxxf86vm-dev)")
-  endif()
+  # GLFW for window management, input, GL context
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  add_subdirectory(/home/daniel/repos/github/glfw ${CMAKE_BINARY_DIR}/glfw)
   find_package(SDL2 REQUIRED)
 endif()
 
@@ -195,7 +195,7 @@ if(BUILD_CLIENT)
   target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
   target_link_libraries(quake3 PRIVATE
     q3_splines q3_botlib q3_jpeglib
-    X11::X11 X11::Xext X11::Xxf86vm
+    glfw
     ${SDL2_LIBRARIES}
     ${CMAKE_DL_LIBS} m pthread
   )
@@ -222,7 +222,7 @@ if(BUILD_CLIENT AND BUILD_CLIENT_SMP)
   target_compile_definitions(quake3-smp PRIVATE SMP)
   target_link_libraries(quake3-smp PRIVATE
     q3_splines q3_botlib q3_jpeglib
-    X11::X11 X11::Xext X11::Xxf86vm
+    glfw
     ${SDL2_LIBRARIES}
     ${CMAKE_DL_LIBS} m pthread
   )
