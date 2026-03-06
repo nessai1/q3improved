@@ -184,13 +184,14 @@ set(ENGINE_INCLUDES
 # Client executable
 # ===========================================================================
 # ===========================================================================
-# SPIR-V shader compilation
+# SPIR-V shader compilation + embedding as C arrays
 # ===========================================================================
 if(BUILD_CLIENT)
   set(SHADER_DIR ${S}/renderer/shaders)
-  set(SPV_OUTPUT_DIR ${CMAKE_BINARY_DIR}/baseq3/shaders)
+  set(SPV_OUTPUT_DIR ${CMAKE_BINARY_DIR}/generated)
   file(MAKE_DIRECTORY ${SPV_OUTPUT_DIR})
 
+  # Compile GLSL -> SPIR-V
   add_custom_command(
     OUTPUT ${SPV_OUTPUT_DIR}/generic.vert.spv
     COMMAND Vulkan::glslc -o ${SPV_OUTPUT_DIR}/generic.vert.spv ${SHADER_DIR}/generic.vert
@@ -203,9 +204,26 @@ if(BUILD_CLIENT)
     DEPENDS ${SHADER_DIR}/generic.frag
     COMMENT "Compiling generic.frag -> SPIR-V"
   )
+
+  # Embed SPIR-V as C headers (xxd -i)
+  add_custom_command(
+    OUTPUT ${SPV_OUTPUT_DIR}/generic_vert_spv.h
+    COMMAND xxd -i generic.vert.spv > ${SPV_OUTPUT_DIR}/generic_vert_spv.h
+    WORKING_DIRECTORY ${SPV_OUTPUT_DIR}
+    DEPENDS ${SPV_OUTPUT_DIR}/generic.vert.spv
+    COMMENT "Embedding generic.vert.spv as C array"
+  )
+  add_custom_command(
+    OUTPUT ${SPV_OUTPUT_DIR}/generic_frag_spv.h
+    COMMAND xxd -i generic.frag.spv > ${SPV_OUTPUT_DIR}/generic_frag_spv.h
+    WORKING_DIRECTORY ${SPV_OUTPUT_DIR}
+    DEPENDS ${SPV_OUTPUT_DIR}/generic.frag.spv
+    COMMENT "Embedding generic.frag.spv as C array"
+  )
+
   add_custom_target(shaders ALL DEPENDS
-    ${SPV_OUTPUT_DIR}/generic.vert.spv
-    ${SPV_OUTPUT_DIR}/generic.frag.spv
+    ${SPV_OUTPUT_DIR}/generic_vert_spv.h
+    ${SPV_OUTPUT_DIR}/generic_frag_spv.h
   )
 endif()
 
@@ -220,7 +238,7 @@ if(BUILD_CLIENT)
     ${UNIX_CLIENT_SRC}
     ${GAME_SHARED_SRC}
   )
-  target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
+  target_include_directories(quake3 PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS} ${CMAKE_BINARY_DIR}/generated)
   add_dependencies(quake3 shaders)
   target_link_libraries(quake3 PRIVATE
     q3_splines q3_botlib q3_jpeglib
@@ -248,7 +266,7 @@ if(BUILD_CLIENT AND BUILD_CLIENT_SMP)
     ${UNIX_CLIENT_SRC}
     ${GAME_SHARED_SRC}
   )
-  target_include_directories(quake3-smp PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS})
+  target_include_directories(quake3-smp PRIVATE ${ENGINE_INCLUDES} ${SDL2_INCLUDE_DIRS} ${CMAKE_BINARY_DIR}/generated)
   target_compile_definitions(quake3-smp PRIVATE SMP)
   add_dependencies(quake3-smp shaders)
   target_link_libraries(quake3-smp PRIVATE
