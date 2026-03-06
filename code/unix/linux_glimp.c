@@ -56,6 +56,8 @@ static GLFWmonitor *glfw_monitor = NULL;
 
 static qboolean mouse_avail = qfalse;
 static qboolean mouse_active = qfalse;
+static qboolean window_focused = qtrue;       // tracks focus via callback
+static int mouse_regrab_time = 0;              // Sys_Milliseconds() deadline for re-grab delay
 static double mouse_last_x, mouse_last_y;
 static qboolean mouse_first = qtrue;
 
@@ -249,10 +251,15 @@ static void scroll_callback( GLFWwindow *w, double xoffset, double yoffset )
 static void window_focus_callback( GLFWwindow *w, int focused )
 {
   if ( focused ) {
-    if ( mouse_avail && !in_nograb->value )
-      IN_ActivateMouse();
-  } else {
+    window_focused = qtrue;
+    // Deactivate now so the re-grab is a clean NORMAL -> DISABLED transition.
+    // Delay the actual re-grab to give the compositor time to acknowledge focus.
     IN_DeactivateMouse();
+    mouse_regrab_time = Sys_Milliseconds() + 50;
+  } else {
+    window_focused = qfalse;
+    IN_DeactivateMouse();
+    mouse_regrab_time = 0;
   }
 }
 
@@ -276,17 +283,14 @@ void IN_ActivateMouse( void )
   if ( !mouse_avail || !glfw_window )
     return;
 
+  if ( !window_focused )
+    return;
+
   if ( !mouse_active ) {
     if ( !in_nograb->value ) {
       glfwSetInputMode( glfw_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED );
       if ( glfwRawMouseMotionSupported() )
         glfwSetInputMode( glfw_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE );
-
-      // Verify the grab actually worked
-      int mode = glfwGetInputMode( glfw_window, GLFW_CURSOR );
-      if ( mode != GLFW_CURSOR_DISABLED )
-        ri.Printf( PRINT_WARNING, "IN_ActivateMouse: cursor grab failed (mode=%d, expected %d)\n",
-                   mode, GLFW_CURSOR_DISABLED );
     }
     mouse_first = qtrue;
     mouse_active = qtrue;
@@ -676,6 +680,19 @@ void IN_Frame( void )
       IN_DeactivateMouse();
       return;
     }
+  }
+
+  if ( !glfw_window )
+    return;
+
+  // After focus regain, keep mouse deactivated until the delay expires.
+  // This gives the compositor time to process the focus event before we
+  // request pointer lock.
+  if ( mouse_regrab_time ) {
+    if ( Sys_Milliseconds() < mouse_regrab_time ) {
+      return;
+    }
+    mouse_regrab_time = 0;
   }
 
   IN_ActivateMouse();
