@@ -1342,6 +1342,7 @@ static void RoQShutdown( void ) {
 	}
 	Com_DPrintf("finished cinematic\n");
 	cinTable[currentHandle].status = FMV_IDLE;
+	SNDDMA_CinDirectStop();
 
 	if (cinTable[currentHandle].iFile) {
 		Sys_EndStreamedFile( cinTable[currentHandle].iFile );
@@ -1684,12 +1685,14 @@ void CL_PlayCinematic_f(void) {
 	}
 
 	S_StopAllSounds ();
+	S_BeginRegistration();	// ensure sound is unmuted after disconnect
 
 	CL_handle = CIN_PlayCinematic( arg, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, bits );
 	if (CL_handle >= 0) {
 		do {
 			SCR_RunCinematic();
 		} while (cinTable[currentHandle].buf == NULL && cinTable[currentHandle].status == FMV_PLAY);		// wait for first frame (load codebook and sound)
+		SNDDMA_CinDirectStart();
 	}
 }
 
@@ -1709,6 +1712,7 @@ void SCR_RunCinematic (void)
 
 void SCR_StopCinematic(void) {
 	if (CL_handle >= 0 && CL_handle < MAX_VIDEO_HANDLES) {
+		SNDDMA_CinDirectStop();
 		CIN_StopCinematic(CL_handle);
 		S_StopAllSounds ();
 		CL_handle = -1;

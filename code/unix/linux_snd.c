@@ -25,6 +25,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // samples out of dma.buffer.  The mixer writes into dma.buffer from the
 // main thread; the callback reads from it -- the ring-buffer index
 // (dma_pos) is the only shared state, updated atomically.
+//
+// During cinematic playback, the callback bypasses dma.buffer entirely
+// and reads directly from s_rawsamples[] -- the ring buffer fed by
+// S_RawSamples() from the RoQ decoder.  This avoids the mixer's
+// mix-ahead / repaint timing issues that cause audio "blinking."
 
 #include <SDL.h>
 #include <string.h>
@@ -38,6 +43,10 @@ extern int Sys_Milliseconds(void);
 static int	snd_inited;
 static int	dma_pos;	// read position in dma.buffer (in samples)
 
+// Cinematic direct audio: bypass DMA mixer, read s_rawsamples directly
+static volatile int cin_direct;		// nonzero = cinematic direct mode active
+static volatile int cin_readpos;	// read position in s_rawsamples timeline
+
 static cvar_t *sndbits;
 static cvar_t *sndspeed;
 static cvar_t *sndchannels;
@@ -50,31 +59,93 @@ void Snd_Memset(void *dest, const int val, const size_t count)
 }
 
 // SDL audio callback -- runs in a separate thread.
-// Copies mixed audio from dma.buffer ring into SDL's output stream.
+// In cinematic direct mode, reads from s_rawsamples[] ring buffer.
+// Otherwise, copies mixed audio from dma.buffer ring into SDL's output.
 static void sdl_audio_callback(void *userdata, Uint8 *stream, int len)
 {
-	int bytes_per_sample = dma.samplebits / 8;
-	int total_bytes      = dma.samples * bytes_per_sample;
-	int pos              = dma_pos * bytes_per_sample;
-
 	(void)userdata;
 
-	if (!snd_inited || !dma.buffer) {
+	if (!snd_inited) {
 		memset(stream, 0, len);
 		return;
 	}
 
-	while (len > 0) {
-		int chunk = total_bytes - pos;
-		if (chunk > len)
-			chunk = len;
-		memcpy(stream, dma.buffer + pos, chunk);
-		stream += chunk;
-		len    -= chunk;
-		pos     = (pos + chunk) % total_bytes;
+	if (cin_direct) {
+		// Direct cinematic audio: read from s_rawsamples[]
+		int frames = len / (dma.channels * (dma.samplebits / 8));
+		short *out = (short *)stream;
+		int rp = cin_readpos;
+		int re = s_rawend;
+		int i;
+
+		// If we fell behind the ring buffer, skip ahead
+		if (re - rp > MAX_RAW_SAMPLES) {
+			rp = re - MAX_RAW_SAMPLES;
+		}
+
+		for (i = 0; i < frames; i++) {
+			if (rp < re) {
+				int idx = rp & (MAX_RAW_SAMPLES - 1);
+				int left  = s_rawsamples[idx].left >> 8;
+				int right = s_rawsamples[idx].right >> 8;
+				// clamp to 16-bit
+				if (left > 32767) left = 32767;
+				else if (left < -32768) left = -32768;
+				if (right > 32767) right = 32767;
+				else if (right < -32768) right = -32768;
+				out[i*2]   = (short)left;
+				out[i*2+1] = (short)right;
+				rp++;
+			} else {
+				out[i*2]   = 0;
+				out[i*2+1] = 0;
+			}
+		}
+		cin_readpos = rp;
+
+		// Keep dma_pos advancing so S_GetSoundtime doesn't stall
+		dma_pos = (dma_pos + frames * dma.channels) % dma.samples;
+		return;
 	}
 
-	dma_pos = pos / bytes_per_sample;
+	// Normal path: copy from dma.buffer
+	if (!dma.buffer) {
+		memset(stream, 0, len);
+		return;
+	}
+
+	{
+		int bytes_per_sample = dma.samplebits / 8;
+		int total_bytes      = dma.samples * bytes_per_sample;
+		int pos              = dma_pos * bytes_per_sample;
+
+		while (len > 0) {
+			int chunk = total_bytes - pos;
+			if (chunk > len)
+				chunk = len;
+			memcpy(stream, dma.buffer + pos, chunk);
+			stream += chunk;
+			len    -= chunk;
+			pos     = (pos + chunk) % total_bytes;
+		}
+
+		dma_pos = pos / bytes_per_sample;
+	}
+}
+
+void SNDDMA_CinDirectStart(void)
+{
+	SDL_LockAudio();
+	cin_readpos = s_rawend;
+	cin_direct  = 1;
+	SDL_UnlockAudio();
+}
+
+void SNDDMA_CinDirectStop(void)
+{
+	SDL_LockAudio();
+	cin_direct = 0;
+	SDL_UnlockAudio();
 }
 
 qboolean SNDDMA_Init(void)
@@ -126,7 +197,7 @@ qboolean SNDDMA_Init(void)
 	dma.samplebits = (obtained.format & 0xFF);  // bits from format
 
 	dma.samples          = SND_BUFFER_SAMPLES;
-	dma.submission_chunk = 1;
+	dma.submission_chunk = obtained.samples;
 	dma.buffer           = (byte *)calloc(1, dma.samples * (dma.samplebits / 8));
 	if (!dma.buffer) {
 		Com_Printf("SDL audio: failed to allocate DMA buffer\n");

@@ -178,6 +178,10 @@ portable_samplepair_t *S_GetRawSamplePointer();
 // spatializes a channel
 void S_Spatialize(channel_t *ch);
 
+// cinematic direct audio bypass (linux_snd.c)
+void SNDDMA_CinDirectStart(void);
+void SNDDMA_CinDirectStop(void);
+
 // adpcm functions
 int  S_AdpcmMemoryNeeded( const wavinfo_t *info );
 void S_AdpcmEncodeSound( sfx_t *sfx, short *samples );

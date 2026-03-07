@@ -604,6 +604,13 @@ void UI_SPPostgameMenu_f( void ) {
 	}
 	else {
 		postgameMenuInfo.won = -1;
+
+		// Play a random lose video as fullscreen cinematic, then return to level select
+		trap_Cvar_Set( "nextmap", "levelselect" );
+		trap_Cmd_ExecuteText( EXEC_APPEND,
+			va( "disconnect; cinematic video/lose_%02d.roq\n",
+				( trap_Milliseconds() % 10 ) + 1 ) );
+		return;
 	}
 
 	postgameMenuInfo.starttime = uis.realtime;
@@ -615,12 +622,7 @@ void UI_SPPostgameMenu_f( void ) {
 	UI_SPPostgameMenu_Init();
 	UI_PushMenu( &postgameMenuInfo.menu );
 
-	if ( playerGameRank == 1 ) {
-		Menu_SetCursorToItem( &postgameMenuInfo.menu, &postgameMenuInfo.item_next );
-	}
-	else {
-		Menu_SetCursorToItem( &postgameMenuInfo.menu, &postgameMenuInfo.item_again );
-	}
+	Menu_SetCursorToItem( &postgameMenuInfo.menu, &postgameMenuInfo.item_next );
 
 	Prepname( 0 );
 	Prepname( 1 );

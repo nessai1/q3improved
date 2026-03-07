@@ -225,6 +225,37 @@ if(BUILD_CLIENT)
     ${SPV_OUTPUT_DIR}/generic_vert_spv.h
     ${SPV_OUTPUT_DIR}/generic_frag_spv.h
   )
+
+  # =========================================================================
+  # Lose video conversion (MP4 -> RoQ) and pk3 packaging
+  # =========================================================================
+  set(LOSE_VIDEO_DIR "${CMAKE_BINARY_DIR}/mod/lose" CACHE PATH "Directory containing lose_XX.mp4 files")
+  set(ROQ_STAGING ${CMAKE_BINARY_DIR}/lose_staging/video)
+  file(MAKE_DIRECTORY ${ROQ_STAGING})
+
+  set(ROQ_FILES "")
+  foreach(NN 01 02 03 04 05 06 07 08 09 10)
+    set(MP4_FILE ${LOSE_VIDEO_DIR}/lose_${NN}.mp4)
+    set(ROQ_FILE ${ROQ_STAGING}/lose_${NN}.roq)
+    add_custom_command(
+      OUTPUT ${ROQ_FILE}
+      COMMAND ffmpeg -loglevel warning -i ${MP4_FILE}
+        -vf scale=256:256 -r 30 -vcodec roqvideo
+        -acodec roq_dpcm -ar 22050 -ac 2 -y ${ROQ_FILE}
+      DEPENDS ${MP4_FILE}
+      COMMENT "Converting lose_${NN}.mp4 -> RoQ"
+    )
+    list(APPEND ROQ_FILES ${ROQ_FILE})
+  endforeach()
+
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/baseq3/zpak_lose.pk3
+    COMMAND zip -r ${CMAKE_BINARY_DIR}/baseq3/zpak_lose.pk3 video/
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/lose_staging
+    DEPENDS ${ROQ_FILES}
+    COMMENT "Packaging lose videos into zpak_lose.pk3"
+  )
+  add_custom_target(lose_videos ALL DEPENDS ${CMAKE_BINARY_DIR}/baseq3/zpak_lose.pk3)
 endif()
 
 if(BUILD_CLIENT)
