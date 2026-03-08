@@ -461,6 +461,12 @@ void VK_CreateSwapchain( void )
       ri.Error( ERR_FATAL, "VK_CreateSwapchain: vkCreateImageView failed" );
   }
 
+  // Sync glConfig with actual surface dimensions so viewport/scissor
+  // match the framebuffer.  Compositor, HiDPI, or Wayland can make
+  // surfCaps.currentExtent differ from the requested window size.
+  glConfig.vidWidth  = vk.swapchainExtent.width;
+  glConfig.vidHeight = vk.swapchainExtent.height;
+
   ri.Printf( PRINT_ALL, "Vulkan swapchain: %dx%d, %d images, format %d\n",
              vk.swapchainExtent.width, vk.swapchainExtent.height,
              vk.swapchainImageCount, vk.swapchainFormat );
