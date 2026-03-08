@@ -35,6 +35,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 void S_Play_f(void);
 void S_SoundList_f(void);
 void S_Music_f(void);
+void S_MusicDir_f(void);
 
 void S_Update_();
 void S_StopAllSounds(void);
@@ -45,6 +46,14 @@ static wavinfo_t	s_backgroundInfo;
 //int			s_nextWavChunk;
 static int			s_backgroundSamples;
 static char		s_backgroundLoop[MAX_QPATH];
+
+// musicdir: random playlist from a directory of .wav files
+#define MUSICDIR_MAX_TRACKS 128
+#define MUSICDIR_LIST_SIZE  4096
+static char		s_musicDirPath[MAX_QPATH];		// e.g. "music/fight"
+static char		s_musicDirList[MUSICDIR_LIST_SIZE];	// null-separated filenames
+static int		s_musicDirCount;			// number of tracks found
+static int		s_musicDirCurrent;			// index of currently playing track
 //static char		s_backgroundMusic[MAX_QPATH]; //TTimo: unused
 
 
@@ -162,6 +171,7 @@ void S_Init( void ) {
 
 	Cmd_AddCommand("play", S_Play_f);
 	Cmd_AddCommand("music", S_Music_f);
+	Cmd_AddCommand("musicdir", S_MusicDir_f);
 	Cmd_AddCommand("s_list", S_SoundList_f);
 	Cmd_AddCommand("s_info", S_SoundInfo_f);
 	Cmd_AddCommand("s_stop", S_StopAllSounds);
@@ -1334,6 +1344,101 @@ void S_Music_f( void ) {
 
 }
 
+/*
+======================
+S_MusicDirPlay
+
+Pick a random track from the musicdir playlist and start it.
+Sets s_backgroundLoop to empty so the track doesn't self-loop --
+when it ends, S_UpdateBackgroundTrack will call us again.
+======================
+*/
+static void S_MusicDirPlay( void ) {
+	int		pick, n;
+	char	*p;
+	char	track[MAX_QPATH];
+
+	if ( !s_musicDirCount ) {
+		return;
+	}
+
+	// pick a random track, avoid repeating the same one if possible
+	if ( s_musicDirCount > 1 ) {
+		do {
+			pick = rand() % s_musicDirCount;
+		} while ( pick == s_musicDirCurrent );
+	} else {
+		pick = 0;
+	}
+	s_musicDirCurrent = pick;
+
+	// walk the null-separated list to find track #pick
+	p = s_musicDirList;
+	for ( n = 0; n < pick; n++ ) {
+		p += strlen( p ) + 1;
+	}
+
+	Com_sprintf( track, sizeof( track ), "%s/%s", s_musicDirPath, p );
+	Com_Printf( "musicdir: playing %s\n", track );
+
+	S_StartBackgroundTrack( track, track );
+	// clear the loop so when it ends we hit the musicdir advance path
+	// (must do after StartBackgroundTrack, which sets s_backgroundLoop)
+	s_backgroundLoop[0] = 0;
+}
+
+/*
+======================
+S_MusicDir_f
+
+Console command: musicdir <path>
+Scans the given directory for .wav files and starts random playback.
+musicdir "" or musicdir with no args stops the playlist.
+======================
+*/
+void S_MusicDir_f( void ) {
+	char	*p;
+	int		i, len;
+
+	if ( Cmd_Argc() < 2 || !Cmd_Argv(1)[0] ) {
+		if ( s_musicDirCount ) {
+			Com_Printf( "musicdir: stopped (%d tracks in %s)\n",
+				s_musicDirCount, s_musicDirPath );
+		}
+		s_musicDirPath[0] = 0;
+		s_musicDirCount = 0;
+		S_StopBackgroundTrack();
+		return;
+	}
+
+	Q_strncpyz( s_musicDirPath, Cmd_Argv(1), sizeof( s_musicDirPath ) );
+
+	s_musicDirCount = FS_GetFileList( s_musicDirPath, ".wav",
+		s_musicDirList, sizeof( s_musicDirList ) );
+
+	if ( s_musicDirCount > MUSICDIR_MAX_TRACKS ) {
+		s_musicDirCount = MUSICDIR_MAX_TRACKS;
+	}
+
+	if ( !s_musicDirCount ) {
+		Com_Printf( "musicdir: no .wav files found in %s\n", s_musicDirPath );
+		s_musicDirPath[0] = 0;
+		return;
+	}
+
+	// print what we found
+	Com_Printf( "musicdir: %d tracks in %s\n", s_musicDirCount, s_musicDirPath );
+	p = s_musicDirList;
+	for ( i = 0; i < s_musicDirCount; i++ ) {
+		len = strlen( p );
+		Com_Printf( "  %d: %s\n", i + 1, p );
+		p += len + 1;
+	}
+
+	s_musicDirCurrent = -1;  // no track yet
+	S_MusicDirPlay();
+}
+
 void S_SoundList_f( void ) {
 	int		i;
 	sfx_t	*sfx;
@@ -1589,6 +1694,15 @@ void S_UpdateBackgroundTrack( void ) {
 				S_StartBackgroundTrack( s_backgroundLoop, s_backgroundLoop );
 				if ( !s_backgroundFile ) {
 					return;		// loop failed to restart
+				}
+			} else if ( s_musicDirCount ) {
+				// musicdir active: advance to next random track
+				Sys_EndStreamedFile( s_backgroundFile );
+				FS_FCloseFile( s_backgroundFile );
+				s_backgroundFile = 0;
+				S_MusicDirPlay();
+				if ( !s_backgroundFile ) {
+					return;
 				}
 			} else {
 				s_backgroundFile = 0;
